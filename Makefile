@@ -14,6 +14,10 @@ PROTOC_ARCH := $(shell uname -m | sed 's/arm64/aarch_64/;s/aarch64/aarch_64/')
 lint:
 	$(LOCAL_BIN)/golangci-lint run
 
+generate:
+	go generate ./...
+	go tool mockery
+
 .PHONY: test
 test:
 	go test -race -shuffle=on ./...

@@ -1,0 +1,9 @@
+BEGIN;
+
+DROP TABLE IF EXISTS hold;
+DROP TABLE IF EXISTS ledger_entry;
+DROP TABLE IF EXISTS ledger_transaction;
+DROP TABLE IF EXISTS account;
+DROP FUNCTION IF EXISTS ledger_immutable();
+
+COMMIT;
