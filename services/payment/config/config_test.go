@@ -37,6 +37,7 @@ func Test_New_Defaults(t *testing.T) {
 	for _, name := range []string{
 		"HTTP_PORT", "SAGA_ACTIVITY_TIMEOUT", "SAGA_RETRY_INITIAL_INTERVAL", "SAGA_RETRY_MAX_INTERVAL",
 		"SAGA_BANK_MAX_ATTEMPTS", "OUTBOX_INTERVAL", "OUTBOX_LIMIT", "BANK_TIMEOUT", "TEMPORAL_NAMESPACE",
+		"RECONCILIATION_INTERVAL", "RECONCILIATION_LOOKBACK", "RECONCILIATION_LAG", "RECONCILIATION_STUCK_AFTER",
 	} {
 		t.Setenv(name, "")
 		require.NoError(t, os.Unsetenv(name))
@@ -53,6 +54,10 @@ func Test_New_Defaults(t *testing.T) {
 	require.EqualValues(t, 3, c.Saga.BankMaxAttempts)
 	require.Equal(t, time.Second, c.OutboxWorker.Interval)
 	require.Equal(t, 100, c.OutboxWorker.Limit)
+	require.Equal(t, time.Minute, c.TemporalWorker.ReconciliationInterval)
+	require.Equal(t, 24*time.Hour, c.TemporalWorker.ReconciliationLookback)
+	require.Equal(t, 30*time.Second, c.TemporalWorker.ReconciliationLag)
+	require.Equal(t, 5*time.Minute, c.TemporalWorker.ReconciliationStuckAfter)
 }
 
 func Test_New_Override(t *testing.T) {

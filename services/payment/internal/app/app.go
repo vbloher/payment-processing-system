@@ -81,7 +81,7 @@ func Run(ctx context.Context, c config.Config) error {
 
 	uc := usecase.New(tx, postgres.New(tx), ledgerClient, bankClient, publisher, orch)
 
-	temporalWorker, err := temporal_worker.New(temporalClient, c.TemporalWorker, uc)
+	temporalWorker, err := temporal_worker.New(ctx, temporalClient, c.TemporalWorker, uc)
 	if err != nil {
 		return fmt.Errorf("temporal_worker.New: %w", err)
 	}

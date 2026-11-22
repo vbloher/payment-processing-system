@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,6 +22,51 @@ import (
 	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
+
+// Defines values for DiscrepancyKind.
+const (
+	DiscrepancyKindAmountMismatch DiscrepancyKind = "amount_mismatch"
+	DiscrepancyKindBankMissing    DiscrepancyKind = "bank_missing"
+	DiscrepancyKindBankUnexpected DiscrepancyKind = "bank_unexpected"
+	DiscrepancyKindLedgerMismatch DiscrepancyKind = "ledger_mismatch"
+	DiscrepancyKindStuck          DiscrepancyKind = "stuck"
+)
+
+// Valid indicates whether the value is a known member of the DiscrepancyKind enum.
+func (e DiscrepancyKind) Valid() bool {
+	switch e {
+	case DiscrepancyKindAmountMismatch:
+		return true
+	case DiscrepancyKindBankMissing:
+		return true
+	case DiscrepancyKindBankUnexpected:
+		return true
+	case DiscrepancyKindLedgerMismatch:
+		return true
+	case DiscrepancyKindStuck:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DiscrepancyStatus.
+const (
+	DiscrepancyStatusOpen     DiscrepancyStatus = "open"
+	DiscrepancyStatusResolved DiscrepancyStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the DiscrepancyStatus enum.
+func (e DiscrepancyStatus) Valid() bool {
+	switch e {
+	case DiscrepancyStatusOpen:
+		return true
+	case DiscrepancyStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for PaymentStatus.
 const (
@@ -68,6 +114,37 @@ type CreatePaymentInput struct {
 	// Description Example: Invoice 42
 	Description *string `json:"description,omitempty"`
 }
+
+// Discrepancy defines model for Discrepancy.
+type Discrepancy struct {
+	CreatedAt time.Time          `json:"created_at"`
+	Details   string             `json:"details"`
+	ID        openapi_types.UUID `json:"id"`
+	Kind      DiscrepancyKind    `json:"kind"`
+
+	// PaymentID Absent when no payment matches the bank's reference
+	PaymentID *openapi_types.UUID `json:"payment_id,omitempty"`
+
+	// Reference The payment ID, or the bank's reference when no payment matches it
+	//
+	// Example: ROGUE-1
+	Reference string `json:"reference"`
+
+	// ResolvedAt Absent while the discrepancy is open
+	ResolvedAt *time.Time        `json:"resolved_at,omitempty"`
+	Status     DiscrepancyStatus `json:"status"`
+}
+
+// DiscrepancyKind defines model for DiscrepancyKind.
+type DiscrepancyKind string
+
+// DiscrepancyList defines model for DiscrepancyList.
+type DiscrepancyList struct {
+	Discrepancies []Discrepancy `json:"discrepancies"`
+}
+
+// DiscrepancyStatus defines model for DiscrepancyStatus.
+type DiscrepancyStatus string
 
 // ErrorResponse Example: {"error":"request failed: not found"}
 type ErrorResponse struct {
@@ -121,6 +198,12 @@ type CreatePaymentParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// GetDiscrepanciesParams defines parameters for GetDiscrepancies.
+type GetDiscrepanciesParams struct {
+	// Status Only discrepancies with this status; all when absent
+	Status *DiscrepancyStatus `form:"status,omitempty" json:"status,omitempty"`
+}
+
 // CreatePaymentJSONRequestBody defines body for CreatePayment for application/json ContentType.
 type CreatePaymentJSONRequestBody = CreatePaymentInput
 
@@ -132,6 +215,9 @@ type ServerInterface interface {
 	// GetPayment Get a payment by ID
 	// (GET /payments/{id})
 	GetPayment(w http.ResponseWriter, r *http.Request, id PaymentID)
+	// GetDiscrepancies List the discrepancies reconciliation found, newest first
+	// (GET /reconciliation/discrepancies)
+	GetDiscrepancies(w http.ResponseWriter, r *http.Request, params GetDiscrepanciesParams)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -147,6 +233,12 @@ func (_ Unimplemented) CreatePayment(w http.ResponseWriter, r *http.Request, par
 // GetPayment Get a payment by ID
 // (GET /payments/{id})
 func (_ Unimplemented) GetPayment(w http.ResponseWriter, r *http.Request, id PaymentID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetDiscrepancies List the discrepancies reconciliation found, newest first
+// (GET /reconciliation/discrepancies)
+func (_ Unimplemented) GetDiscrepancies(w http.ResponseWriter, r *http.Request, params GetDiscrepanciesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -221,6 +313,39 @@ func (siw *ServerInterfaceWrapper) GetPayment(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetPayment(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDiscrepancies operation middleware
+func (siw *ServerInterfaceWrapper) GetDiscrepancies(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetDiscrepanciesParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDiscrepancies(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -348,6 +473,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/payments/{id}", wrapper.GetPayment)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/reconciliation/discrepancies", wrapper.GetDiscrepancies)
 	})
 
 	return r
@@ -490,6 +618,56 @@ func (response GetPayment500JSONResponse) VisitGetPaymentResponse(w http.Respons
 	return err
 }
 
+type GetDiscrepanciesRequestObject struct {
+	Params GetDiscrepanciesParams
+}
+
+type GetDiscrepanciesResponseObject interface {
+	VisitGetDiscrepanciesResponse(w http.ResponseWriter) error
+}
+
+type GetDiscrepancies200JSONResponse DiscrepancyList
+
+func (response GetDiscrepancies200JSONResponse) VisitGetDiscrepanciesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetDiscrepancies400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetDiscrepancies400JSONResponse) VisitGetDiscrepanciesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetDiscrepancies500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetDiscrepancies500JSONResponse) VisitGetDiscrepanciesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// CreatePayment Create an outbound payment idempotently by Idempotency-Key
@@ -498,6 +676,9 @@ type StrictServerInterface interface {
 	// GetPayment Get a payment by ID
 	// (GET /payments/{id})
 	GetPayment(ctx context.Context, request GetPaymentRequestObject) (GetPaymentResponseObject, error)
+	// GetDiscrepancies List the discrepancies reconciliation found, newest first
+	// (GET /reconciliation/discrepancies)
+	GetDiscrepancies(ctx context.Context, request GetDiscrepanciesRequestObject) (GetDiscrepanciesResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -598,30 +779,62 @@ func (sh *strictHandler) GetPayment(w http.ResponseWriter, r *http.Request, id P
 	}
 }
 
+// GetDiscrepancies operation middleware
+func (sh *strictHandler) GetDiscrepancies(w http.ResponseWriter, r *http.Request, params GetDiscrepanciesParams) {
+	var request GetDiscrepanciesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetDiscrepancies(ctx, request.(GetDiscrepanciesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetDiscrepancies")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetDiscrepanciesResponseObject); ok {
+		if err := validResponse.VisitGetDiscrepanciesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"vFjdUhs5E30Vlb5UfTcyHoNhN96rJLApimySIsnNsiwlS21bYUaaSBqIi5p332rN/w8xsFm4wjNSd6vP",
+	"6dPquaPCJKnRoL2jizuacssT8GDDr1MJSWo8aLE9gy0+UZou6Aa4BEsZ1TwBumgvm+A6Ri18y5QFSRfe",
+	"ZsCoExtIOBpI+Pd3oNd+Qxf7h4eMJkpXv2eM+m2KBp23Sq9pnjP6kW8T0P70GDfDd56kMa44PIzg13kU",
+	"TWD/5XIyn8n5hP8yO5rM50dHh4fzeRRFEWVFuCn3myZYJX8Y38rYhHu6oFkWVvYjynGzS412EFL0mstz",
+	"+JaB8/hLGO1Bh395msZKcK+Mnn51RuOzxs0LCyu6oP+bNumfFm/d9MRaY89LJ4VLCU5YlaIxukCfpHKa",
+	"M/rG6FWsxDMG0AKcXMOWWMgcSHKr/IZwItVqBRa0J7YJ8lR7sJrHwfYzRlq6JZ/A3oAlhfuc0ffG/24y",
+	"LZ8vlPfGk8Ilviu3odU3FriHiug6zUIkqTUpWK8KmnEhTKb9lZJPqoMdrGaUJ2gebXeD/kNpY0mmlXeU",
+	"NX4PoihqWVXaH80pw+JWSZbQxSxq/YUiL5/XrpX2sIYAxRI0rJRQ3G67hzs+mXw4m8wKw7VKzKMdqsGo",
+	"yKxFcnbNnXw5pwzVwIPFs/198Wry5+XdQf5iLCOdPLTNnOobowSQ+T5lAzkbClgjNRdtFOuUt6LtpuKy",
+	"tmaWX0GEKjpWTlhIeXm2LkdE4JG84r4jZJJ7mHiVwPgpPVdx2D54p2THzn3UuVZa7iqOVtxnuDxHHALf",
+	"S0Z3Wfdq6VA+bjegiTakXEoS7sUGHPEbIEuur//viIUgNQIeQvJm8cDj5w3Ubk6PGTF21Mu9ISnfLg96",
+	"/uHtl5PJbDwIZ+KbGqZ7Dq5iCAHIJnFEOWJS0JQ9EFvnuc/cI6D5VGzoszYkM6DcTmHDndoTa1NwB33P",
+	"StaARl24oJjpq0Q5h8Gz4mem4XsKwkNTLrgk5JwyGoNcg20/cT4T1/RyJBctz++UGxHYJtHlA+UheUzy",
+	"aF675dby7SCNXQ870vOpxq5KUAl9RZ/RU3Z7UFu17igUjZeWPZmsuIpBLog2nqyKtsR6OYGqV/9Y1Ypl",
+	"Ywcqe9qudvaI7jRoOSPtBKmzo9TLuvaWa7cCG0oektRvSaa9iuvaJ1y7W7AwGlWvbw3eP0WP251rV0sa",
+	"vEdIMwtXFnh5deme/KQ8YQyuENFKxQoudBRMaZet8HSo0atMSzcW7gPxcwM2l7mhgXICqrJ3mRAAMryo",
+	"g7Jwo+B2lPBZKh+Z4jFte1Rb7sLQ0r5e9gdE7BCiE/qwdDBMpVdmiOGHzC+xWivsHCkTCJIst4QTx9ec",
+	"cGFNiXGhkoRrWbMas6J8gLmsUPLq4yll9AasK9zM9qK9CDOMssNTRRf0YC/aOyguUJuA5bQKAX+kxo30",
+	"s3NIgXul18F3JT1hTsAHjicQBgiMbmkkThI+s9o1b0sfe+Rze32wwLXxG7DFRoVd+mtoFsXbefRy7y+E",
+	"AXUnXOhPJV10L9uUdQbei3Gxb5ZMewNxfskqPX1t5PanzRIjE0Ge5/2xtT+K7kf7Py2CKkEjc0xFGS4E",
+	"pJjulbGkVcU5o/Mous9BHfG0NTmHLS93b6kn3ZzRw4f46E6deBaXJUkQ7JIJhGtiejVFVAWzj7dYVcMP",
+	"HJ6vkTBVMhy9RON1RUzvlMwxvDUEILocfAu+IWAPwugZIXwyVPPdW+r5+mdA9RY84TU6CMjxOAaPrefm",
+	"61KOm6cWhNFCxapI+OBSeB+cx52Fgyh6Eq7jLemYrhRROVK0k98Ij+Ni2OBhJKi+ZX3LwG6bj1l183kY",
+	"Jcbu+pf/IQX7t+4RKnYz9zRC/mt+YXC9cQtR6bKhuCUzouE23J+Vdb7FwvPOYtQDdBG+OhUkyGxMF3TK",
+	"UzW9mYXWUW69q9CsiZyz+lnPbH6Z/zMA",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

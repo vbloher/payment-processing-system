@@ -18,6 +18,51 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for DiscrepancyKind.
+const (
+	DiscrepancyKindAmountMismatch DiscrepancyKind = "amount_mismatch"
+	DiscrepancyKindBankMissing    DiscrepancyKind = "bank_missing"
+	DiscrepancyKindBankUnexpected DiscrepancyKind = "bank_unexpected"
+	DiscrepancyKindLedgerMismatch DiscrepancyKind = "ledger_mismatch"
+	DiscrepancyKindStuck          DiscrepancyKind = "stuck"
+)
+
+// Valid indicates whether the value is a known member of the DiscrepancyKind enum.
+func (e DiscrepancyKind) Valid() bool {
+	switch e {
+	case DiscrepancyKindAmountMismatch:
+		return true
+	case DiscrepancyKindBankMissing:
+		return true
+	case DiscrepancyKindBankUnexpected:
+		return true
+	case DiscrepancyKindLedgerMismatch:
+		return true
+	case DiscrepancyKindStuck:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DiscrepancyStatus.
+const (
+	DiscrepancyStatusOpen     DiscrepancyStatus = "open"
+	DiscrepancyStatusResolved DiscrepancyStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the DiscrepancyStatus enum.
+func (e DiscrepancyStatus) Valid() bool {
+	switch e {
+	case DiscrepancyStatusOpen:
+		return true
+	case DiscrepancyStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PaymentStatus.
 const (
 	PaymentStatusCreated    PaymentStatus = "created"
@@ -64,6 +109,37 @@ type CreatePaymentInput struct {
 	// Description Example: Invoice 42
 	Description *string `json:"description,omitempty"`
 }
+
+// Discrepancy defines model for Discrepancy.
+type Discrepancy struct {
+	CreatedAt time.Time          `json:"created_at"`
+	Details   string             `json:"details"`
+	ID        openapi_types.UUID `json:"id"`
+	Kind      DiscrepancyKind    `json:"kind"`
+
+	// PaymentID Absent when no payment matches the bank's reference
+	PaymentID *openapi_types.UUID `json:"payment_id,omitempty"`
+
+	// Reference The payment ID, or the bank's reference when no payment matches it
+	//
+	// Example: ROGUE-1
+	Reference string `json:"reference"`
+
+	// ResolvedAt Absent while the discrepancy is open
+	ResolvedAt *time.Time        `json:"resolved_at,omitempty"`
+	Status     DiscrepancyStatus `json:"status"`
+}
+
+// DiscrepancyKind defines model for DiscrepancyKind.
+type DiscrepancyKind string
+
+// DiscrepancyList defines model for DiscrepancyList.
+type DiscrepancyList struct {
+	Discrepancies []Discrepancy `json:"discrepancies"`
+}
+
+// DiscrepancyStatus defines model for DiscrepancyStatus.
+type DiscrepancyStatus string
 
 // ErrorResponse Example: {"error":"request failed: not found"}
 type ErrorResponse struct {
@@ -115,6 +191,12 @@ type NotFound = ErrorResponse
 // CreatePaymentParams defines parameters for CreatePayment.
 type CreatePaymentParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetDiscrepanciesParams defines parameters for GetDiscrepancies.
+type GetDiscrepanciesParams struct {
+	// Status Only discrepancies with this status; all when absent
+	Status *DiscrepancyStatus `form:"status,omitempty" json:"status,omitempty"`
 }
 
 // CreatePaymentJSONRequestBody defines body for CreatePayment for application/json ContentType.
@@ -216,6 +298,11 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /payments/{id} (the `GetPayment` operationId).
 	GetPayment(ctx context.Context, id PaymentID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetDiscrepancies List the discrepancies reconciliation found, newest first
+	//
+	// Corresponds with GET /reconciliation/discrepancies (the `GetDiscrepancies` operationId).
+	GetDiscrepancies(ctx context.Context, params *GetDiscrepanciesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // CreatePaymentWithBody Create an outbound payment idempotently by Idempotency-Key
@@ -261,6 +348,21 @@ func (c *Client) CreatePayment(ctx context.Context, params *CreatePaymentParams,
 // Corresponds with GET /payments/{id} (the `GetPayment` operationId).
 func (c *Client) GetPayment(ctx context.Context, id PaymentID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetPaymentRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetDiscrepancies List the discrepancies reconciliation found, newest first
+//
+// Corresponds with GET /reconciliation/discrepancies (the `GetDiscrepancies` operationId).
+func (c *Client) GetDiscrepancies(ctx context.Context, params *GetDiscrepanciesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetDiscrepanciesRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -358,6 +460,60 @@ func NewGetPaymentRequest(server string, id PaymentID) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetDiscrepanciesRequest constructs an http.Request for the GetDiscrepancies method
+func NewGetDiscrepanciesRequest(server string, params *GetDiscrepanciesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/reconciliation/discrepancies")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Status != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "status", *params.Status, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -426,6 +582,13 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /payments/{id} (the `GetPayment` operationId).
 	GetPaymentWithResponse(ctx context.Context, id PaymentID, reqEditors ...RequestEditorFn) (*GetPaymentResponse, error)
+
+	// GetDiscrepanciesWithResponse List the discrepancies reconciliation found, newest first
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /reconciliation/discrepancies (the `GetDiscrepancies` operationId).
+	GetDiscrepanciesWithResponse(ctx context.Context, params *GetDiscrepanciesParams, reqEditors ...RequestEditorFn) (*GetDiscrepanciesResponse, error)
 }
 
 type CreatePaymentResponse struct {
@@ -552,6 +715,61 @@ func (r GetPaymentResponse) ContentType() string {
 	return ""
 }
 
+type GetDiscrepanciesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *DiscrepancyList
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetDiscrepanciesResponse) GetJSON200() *DiscrepancyList {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetDiscrepanciesResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetDiscrepanciesResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetDiscrepanciesResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetDiscrepanciesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetDiscrepanciesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetDiscrepanciesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // CreatePaymentWithBodyWithResponse Create an outbound payment idempotently by Idempotency-Key
 //
 // Repeating the request with the same key and body returns the same payment. The same key with another body is rejected with 409.
@@ -593,6 +811,19 @@ func (c *ClientWithResponses) GetPaymentWithResponse(ctx context.Context, id Pay
 		return nil, err
 	}
 	return ParseGetPaymentResponse(rsp)
+}
+
+// GetDiscrepanciesWithResponse List the discrepancies reconciliation found, newest first
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /reconciliation/discrepancies (the `GetDiscrepancies` operationId).
+func (c *ClientWithResponses) GetDiscrepanciesWithResponse(ctx context.Context, params *GetDiscrepanciesParams, reqEditors ...RequestEditorFn) (*GetDiscrepanciesResponse, error) {
+	rsp, err := c.GetDiscrepancies(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetDiscrepanciesResponse(rsp)
 }
 
 // ParseCreatePaymentResponse parses an HTTP response from a CreatePaymentWithResponse call
@@ -676,6 +907,46 @@ func ParseGetPaymentResponse(rsp *http.Response) (*GetPaymentResponse, error) {
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetDiscrepanciesResponse parses an HTTP response from a GetDiscrepanciesWithResponse call
+func ParseGetDiscrepanciesResponse(rsp *http.Response) (*GetDiscrepanciesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetDiscrepanciesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiscrepancyList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest InternalError

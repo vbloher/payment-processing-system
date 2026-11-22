@@ -125,6 +125,13 @@ func (s *Suite) SetupSuite() {
 	paymentConfig.Saga.BankMaxAttempts = 3
 	paymentConfig.OutboxWorker.Interval = 100 * time.Millisecond
 	paymentConfig.OutboxWorker.Limit = 100
+	// The tests run reconciliation themselves (reconcile). Temporal aligns intervals to the epoch, so the
+	// schedule still fires on the hour; such a run is harmless: reconciliation is idempotent and tolerates
+	// a concurrent run.
+	paymentConfig.TemporalWorker.ReconciliationInterval = time.Hour
+	paymentConfig.TemporalWorker.ReconciliationLookback = time.Hour
+	paymentConfig.TemporalWorker.ReconciliationLag = 0
+	paymentConfig.TemporalWorker.ReconciliationStuckAfter = time.Second
 	s.start("payment", paymentPort, func(ctx context.Context) error { return payment.Run(ctx, paymentConfig) })
 
 	notificationPort := testinfra.FreePort(s.T())

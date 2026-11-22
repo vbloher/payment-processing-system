@@ -2,6 +2,7 @@ package temporal_worker
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
@@ -9,20 +10,22 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/vbloher/payment-processing-system/services/payment/internal/domain"
+	"github.com/vbloher/payment-processing-system/services/payment/internal/dto"
 	"github.com/vbloher/payment-processing-system/services/payment/internal/saga"
 	"github.com/vbloher/payment-processing-system/services/payment/internal/usecase"
 )
 
-// Activities are the saga steps. Each one calls one use case and classifies its error.
+// Activities are the saga steps and the reconciliation run. Each one calls one use case and classifies its error.
 type Activities struct {
 	usecase *usecase.UseCase
+	config  Config
 }
 
-func NewActivities(uc *usecase.UseCase) *Activities {
-	return &Activities{usecase: uc}
+func NewActivities(uc *usecase.UseCase, c Config) *Activities {
+	return &Activities{usecase: uc, config: c}
 }
 
-// Register registers every activity under its saga.Activity* name, the name the workflow calls.
+// Register registers every payment saga activity under its saga.Activity* name, the name the workflow calls.
 func (a *Activities) Register(r worker.ActivityRegistry) {
 	for name, fn := range map[string]any{
 		saga.ActivityStartProcessing:      a.StartProcessing,
@@ -37,6 +40,11 @@ func (a *Activities) Register(r worker.ActivityRegistry) {
 	} {
 		r.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
+}
+
+// RegisterReconciliation registers the reconciliation activity under saga.ActivityReconcile.
+func (a *Activities) RegisterReconciliation(r worker.ActivityRegistry) {
+	r.RegisterActivityWithOptions(a.Reconcile, activity.RegisterOptions{Name: saga.ActivityReconcile})
 }
 
 func (a *Activities) StartProcessing(ctx context.Context, paymentID uuid.UUID) error {
@@ -79,6 +87,27 @@ func (a *Activities) FailPayment(ctx context.Context, in saga.FailPaymentInput) 
 
 func (a *Activities) MarkPaymentForReview(ctx context.Context, paymentID uuid.UUID) error {
 	return classify(a.usecase.MarkPaymentForReview(ctx, paymentID))
+}
+
+// Reconcile runs one reconciliation as of the activity's clock with the configured window and threshold.
+func (a *Activities) Reconcile(ctx context.Context) (saga.ReconcileResult, error) {
+	out, err := a.usecase.Reconcile(ctx, dto.ReconcileInput{
+		Now:        time.Now(),
+		Lookback:   a.config.ReconciliationLookback,
+		Lag:        a.config.ReconciliationLag,
+		StuckAfter: a.config.ReconciliationStuckAfter,
+	})
+	if err != nil {
+		return saga.ReconcileResult{}, classify(err)
+	}
+
+	return saga.ReconcileResult{
+		Checked:   out.Checked,
+		Found:     out.Found,
+		Resolved:  out.Resolved,
+		Signaled:  out.Signaled,
+		Restarted: out.Restarted,
+	}, nil
 }
 
 // classify turns an error that retrying can never fix into a non-retryable Fatal failure.

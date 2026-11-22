@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
@@ -24,10 +25,19 @@ import (
 
 const Any = mock.Anything
 
+// config has distinct durations, so that a test can tell which one the Reconcile activity used where.
+var config = temporal_worker.Config{
+	ReconciliationInterval:   time.Minute,
+	ReconciliationLookback:   2 * time.Hour,
+	ReconciliationLag:        30 * time.Second,
+	ReconciliationStuckAfter: 5 * time.Minute,
+}
+
 type deps struct {
-	postgres *mocks.Postgres
-	ledger   *mocks.Ledger
-	bank     *mocks.Bank
+	postgres     *mocks.Postgres
+	ledger       *mocks.Ledger
+	bank         *mocks.Bank
+	orchestrator *mocks.Orchestrator
 }
 
 func newActivities(t *testing.T) (*temporal_worker.Activities, deps) {
@@ -38,10 +48,13 @@ func newActivities(t *testing.T) (*temporal_worker.Activities, deps) {
 		return fn(ctx)
 	}).Maybe()
 
-	d := deps{postgres: mocks.NewPostgres(t), ledger: mocks.NewLedger(t), bank: mocks.NewBank(t)}
-	uc := usecase.New(tx, d.postgres, d.ledger, d.bank, mocks.NewPublisher(t), mocks.NewOrchestrator(t))
+	d := deps{
+		postgres: mocks.NewPostgres(t), ledger: mocks.NewLedger(t), bank: mocks.NewBank(t),
+		orchestrator: mocks.NewOrchestrator(t),
+	}
+	uc := usecase.New(tx, d.postgres, d.ledger, d.bank, mocks.NewPublisher(t), d.orchestrator)
 
-	return temporal_worker.NewActivities(uc), d
+	return temporal_worker.NewActivities(uc, config), d
 }
 
 func payment(id uuid.UUID, status domain.Status) domain.Payment {
@@ -147,6 +160,21 @@ func Test_Activities_ErrorMapping(t *testing.T) {
 			},
 			check: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
+		{
+			// A failed lookup fails the run for Temporal to retry; it never becomes a discrepancy.
+			name: "Reconcile: bank unavailable is retryable",
+			call: func(t *testing.T, a *temporal_worker.Activities, d deps, _ uuid.UUID) error {
+				d.postgres.EXPECT().ListPaymentsByStatus(Any, Any).Return(nil, nil)
+				d.postgres.EXPECT().ListOpenDiscrepancies(Any).Return(nil, nil)
+				d.bank.EXPECT().GetStatement(Any, Any, Any).Return(nil, domain.ErrBankUnavailable)
+
+				result, err := a.Reconcile(t.Context())
+				require.Zero(t, result)
+
+				return err
+			},
+			check: func(t *testing.T, err error) { requirePlain(t, err, domain.ErrBankUnavailable) },
+		},
 	}
 
 	for _, tt := range tests {
@@ -168,17 +196,18 @@ func Test_Activities_RegisteredUnderSagaNames(t *testing.T) {
 
 	tests := []struct {
 		name string
-		arg  any
+		args []any
 	}{
-		{saga.ActivityStartProcessing, id},
-		{saga.ActivityHoldFunds, id},
-		{saga.ActivitySendTransfer, id},
-		{saga.ActivityCancelTransfer, id},
-		{saga.ActivityCaptureFunds, id},
-		{saga.ActivityReleaseFunds, id},
-		{saga.ActivityCompletePayment, id},
-		{saga.ActivityFailPayment, saga.FailPaymentInput{PaymentID: id, Reason: domain.ReasonBankDeclined}},
-		{saga.ActivityMarkPaymentForReview, id},
+		{saga.ActivityStartProcessing, []any{id}},
+		{saga.ActivityHoldFunds, []any{id}},
+		{saga.ActivitySendTransfer, []any{id}},
+		{saga.ActivityCancelTransfer, []any{id}},
+		{saga.ActivityCaptureFunds, []any{id}},
+		{saga.ActivityReleaseFunds, []any{id}},
+		{saga.ActivityCompletePayment, []any{id}},
+		{saga.ActivityFailPayment, []any{saga.FailPaymentInput{PaymentID: id, Reason: domain.ReasonBankDeclined}}},
+		{saga.ActivityMarkPaymentForReview, []any{id}},
+		{saga.ActivityReconcile, nil},
 	}
 
 	for _, tt := range tests {
@@ -190,6 +219,7 @@ func Test_Activities_RegisteredUnderSagaNames(t *testing.T) {
 			d.postgres.EXPECT().GetPaymentForUpdate(Any, id).Return(domain.Payment{}, domain.ErrNotFound).Maybe()
 			d.ledger.EXPECT().Capture(Any, id).Return(domain.ErrLedgerConflict).Maybe()
 			d.ledger.EXPECT().Release(Any, id).Return(domain.ErrLedgerConflict).Maybe()
+			d.postgres.EXPECT().ListPaymentsByStatus(Any, Any).Return(nil, domain.ErrNotFound).Maybe()
 
 			var suite testsuite.WorkflowTestSuite
 
@@ -197,8 +227,9 @@ func Test_Activities_RegisteredUnderSagaNames(t *testing.T) {
 
 			env := suite.NewTestActivityEnvironment()
 			a.Register(env)
+			a.RegisterReconciliation(env)
 
-			_, err := env.ExecuteActivity(tt.name, tt.arg)
+			_, err := env.ExecuteActivity(tt.name, tt.args...)
 
 			var appErr *temporal.ApplicationError
 
@@ -207,4 +238,48 @@ func Test_Activities_RegisteredUnderSagaNames(t *testing.T) {
 			require.True(t, appErr.NonRetryable())
 		})
 	}
+}
+
+// Test_Activities_Reconcile checks that a run is reconciled as of the activity's clock with the configured
+// durations: the statement spans Lookback up to now, the payment window ends Lag before now, and only a
+// payment created more than StuckAfter ago is restarted.
+func Test_Activities_Reconcile(t *testing.T) {
+	otel.SilentModeInit()
+
+	a, d := newActivities(t)
+	before := time.Now()
+
+	stale, fresh := payment(uuid.New(), domain.StatusCreated), payment(uuid.New(), domain.StatusCreated)
+	stale.UpdatedAt = before.Add(-config.ReconciliationStuckAfter - time.Minute)
+	fresh.UpdatedAt = before.Add(-config.ReconciliationStuckAfter + time.Minute)
+
+	var statementFrom, statementTo, windowFrom, windowTo time.Time
+
+	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusCreated).Return([]domain.Payment{stale, fresh}, nil)
+	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusReview).Return(nil, nil)
+	d.postgres.EXPECT().ListOpenDiscrepancies(Any).Return(nil, nil)
+	d.orchestrator.EXPECT().StartPayment(Any, stale.ID).Return(nil).Once() // fresh is not expected
+	d.bank.EXPECT().GetStatement(Any, Any, Any).RunAndReturn(
+		func(_ context.Context, from, to time.Time) ([]domain.BankTransfer, error) {
+			statementFrom, statementTo = from, to
+
+			return nil, nil
+		})
+	d.postgres.EXPECT().ListPaymentsUpdatedBetween(Any, Any, Any).RunAndReturn(
+		func(_ context.Context, from, to time.Time) ([]domain.Payment, error) {
+			windowFrom, windowTo = from, to
+
+			return nil, nil
+		})
+
+	got, err := a.Reconcile(t.Context())
+	after := time.Now()
+
+	require.NoError(t, err)
+	require.Equal(t, saga.ReconcileResult{Restarted: 1}, got)
+
+	require.False(t, statementTo.Before(before) || statementTo.After(after), "the statement ends now")
+	require.Equal(t, config.ReconciliationLookback, statementTo.Sub(statementFrom))
+	require.Equal(t, statementFrom, windowFrom)
+	require.Equal(t, config.ReconciliationLag, statementTo.Sub(windowTo))
 }

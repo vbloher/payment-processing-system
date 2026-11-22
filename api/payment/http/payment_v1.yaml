@@ -7,6 +7,7 @@ servers:
   - url: /api/v1
 tags:
   - name: Payments
+  - name: Reconciliation
 paths:
   /payments:
     post:
@@ -55,6 +56,29 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /reconciliation/discrepancies:
+    get:
+      tags: [Reconciliation]
+      operationId: getDiscrepancies
+      summary: List the discrepancies reconciliation found, newest first
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Only discrepancies with this status; all when absent
+          schema:
+            $ref: '#/components/schemas/DiscrepancyStatus'
+      responses:
+        '200':
+          description: Discrepancies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscrepancyList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '500':
           $ref: '#/components/responses/InternalError'
 components:
@@ -175,6 +199,48 @@ components:
         updated_at:
           type: string
           format: date-time
+    DiscrepancyKind:
+      type: string
+      enum: [bank_missing, bank_unexpected, amount_mismatch, ledger_mismatch, stuck]
+    DiscrepancyStatus:
+      type: string
+      enum: [open, resolved]
+    Discrepancy:
+      type: object
+      required: [id, kind, reference, details, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/DiscrepancyKind'
+        reference:
+          type: string
+          description: The payment ID, or the bank's reference when no payment matches it
+          example: ROGUE-1
+        payment_id:
+          type: string
+          format: uuid
+          description: Absent when no payment matches the bank's reference
+        details:
+          type: string
+        status:
+          $ref: '#/components/schemas/DiscrepancyStatus'
+        created_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+          description: Absent while the discrepancy is open
+    DiscrepancyList:
+      type: object
+      required: [discrepancies]
+      properties:
+        discrepancies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Discrepancy'
     ErrorResponse:
       type: object
       required: [error]

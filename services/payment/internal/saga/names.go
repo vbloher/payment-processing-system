@@ -8,6 +8,10 @@ import "github.com/google/uuid"
 const (
 	// PaymentTaskQueue is the task queue the payment worker polls.
 	PaymentTaskQueue = "payment"
+	// ReconciliationTaskQueue is the task queue the reconciliation worker polls.
+	ReconciliationTaskQueue = "reconciliation"
+	// ReconciliationScheduleID is the ID of the Temporal Schedule that starts ReconciliationWorkflow.
+	ReconciliationScheduleID = "reconciliation"
 	// BankOutcomeSignal carries a domain.BankOutcome from reconciliation to a waiting workflow.
 	BankOutcomeSignal = "bank-outcome"
 	// ErrTypeFatal is the ApplicationError type of a non-retryable activity failure.
@@ -25,6 +29,7 @@ const (
 	ActivityCompletePayment      = "CompletePayment"      // (uuid.UUID) error
 	ActivityFailPayment          = "FailPayment"          // (FailPaymentInput) error
 	ActivityMarkPaymentForReview = "MarkPaymentForReview" // (uuid.UUID) error
+	ActivityReconcile            = "Reconcile"            // () (ReconcileResult, error)
 )
 
 // PaymentWorkflowID is the workflow ID of a payment's saga.
