@@ -1,0 +1,3 @@
+CREATE DATABASE payment;
+CREATE DATABASE ledger;
+CREATE DATABASE notification;

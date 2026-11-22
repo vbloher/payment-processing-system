@@ -1,0 +1,178 @@
+name: payment-processing-system
+
+x-app: &app
+  build:
+    context: .
+  restart: on-failure
+  environment: &app-env
+    LOGGER_LEVEL: info
+
+x-migrate: &migrate
+  image: migrate/migrate:v4.20.1
+  restart: 'no'
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: login
+  POSTGRES_PASSWORD: pass
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: '5432'
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: login
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: postgres
+    ports:
+      - '5433:5432' # host 5432 is commonly taken by another local Postgres
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U login -d postgres']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  nats:
+    image: nats:2.15.3
+    command: ['-js', '-m', '8222']
+    ports:
+      - '4222:4222'
+      - '8222:8222'
+
+  temporal:
+    image: temporalio/temporal:1.10.1
+    command: ['server', 'start-dev', '--ip', '0.0.0.0']
+    ports:
+      - '7233:7233'
+      - '8233:8233'
+    healthcheck:
+      test: ['CMD', 'temporal', 'operator', 'cluster', 'health', '--address', 'localhost:7233']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  migrate-ledger:
+    <<: *migrate
+    volumes:
+      - ./services/ledger/migration/postgres:/migrations:ro
+    command: ['-path', '/migrations', '-database', 'postgres://login:pass@postgres:5432/ledger?sslmode=disable', 'up']
+
+  migrate-payment:
+    <<: *migrate
+    volumes:
+      - ./services/payment/migration/postgres:/migrations:ro
+    command: ['-path', '/migrations', '-database', 'postgres://login:pass@postgres:5432/payment?sslmode=disable', 'up']
+
+  migrate-notification:
+    <<: *migrate
+    volumes:
+      - ./services/notification/migration/postgres:/migrations:ro
+    command: ['-path', '/migrations', '-database', 'postgres://login:pass@postgres:5432/notification?sslmode=disable', 'up']
+
+  ledger:
+    <<: *app
+    build:
+      context: .
+      args:
+        SERVICE: ledger
+    environment:
+      <<: [*app-env, *postgres-env]
+      OTEL_SERVICE_NAME: ledger
+      POSTGRES_DB_NAME: ledger
+      HTTP_PORT: '8081'
+      GRPC_PORT: '50051'
+    ports:
+      - '50051:50051'
+      - '8081:8081'
+    depends_on:
+      migrate-ledger:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8081/ready']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  mockbank:
+    <<: *app
+    build:
+      context: .
+      args:
+        SERVICE: mockbank
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: mockbank
+      HTTP_PORT: '8090'
+    ports:
+      - '8090:8090'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8090/ready']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  payment:
+    <<: *app
+    build:
+      context: .
+      args:
+        SERVICE: payment
+    environment:
+      <<: [*app-env, *postgres-env]
+      OTEL_SERVICE_NAME: payment
+      POSTGRES_DB_NAME: payment
+      HTTP_PORT: '8080'
+      NATS_URL: nats://nats:4222
+      TEMPORAL_HOST_PORT: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      LEDGER_ADDR: ledger:50051
+      BANK_URL: http://mockbank:8090/api/v1
+    ports:
+      - '8080:8080'
+    depends_on:
+      migrate-payment:
+        condition: service_completed_successfully
+      nats:
+        condition: service_started
+      temporal:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+      mockbank:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/ready']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  notification:
+    <<: *app
+    build:
+      context: .
+      args:
+        SERVICE: notification
+    environment:
+      <<: [*app-env, *postgres-env]
+      OTEL_SERVICE_NAME: notification
+      POSTGRES_DB_NAME: notification
+      HTTP_PORT: '8082'
+      NATS_URL: nats://nats:4222
+    ports:
+      - '8082:8082'
+    depends_on:
+      migrate-notification:
+        condition: service_completed_successfully
+      nats:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8082/ready']
+      interval: 2s
+      timeout: 5s
+      retries: 15

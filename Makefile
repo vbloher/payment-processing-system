@@ -1,4 +1,4 @@
-DB_MIGRATE_URL = postgres://login:pass@localhost:5432/postgres?sslmode=disable
+DB_MIGRATE_URL = postgres://login:pass@localhost:5433/postgres?sslmode=disable
 MIGRATE_PATH = ./migration/postgres
 
 LOCAL_BIN := $(CURDIR)/bin
@@ -10,6 +10,20 @@ MIGRATE_VERSION = v4.20.1
 PROTOC := $(LOCAL_BIN)/protoc/bin/protoc
 PROTOC_OS := $(shell uname -s | sed 's/Darwin/osx/;s/Linux/linux/')
 PROTOC_ARCH := $(shell uname -m | sed 's/arm64/aarch_64/;s/aarch64/aarch_64/')
+
+
+.PHONY: up down demo
+up:
+	docker compose up -d --build --wait
+
+down:
+	docker compose down -v
+
+run-%:
+	cd services/$* && go run ./cmd/app
+
+demo:
+	./scripts/demo.sh
 
 lint:
 	$(LOCAL_BIN)/golangci-lint run
