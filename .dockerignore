@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+.remember
+.env
+bin
+test
+Dockerfile
+docker-compose.yml

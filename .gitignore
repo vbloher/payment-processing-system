@@ -1,0 +1,7 @@
+.idea
+.vscode
+.env
+bin/
+*.out
+*.pprof
+coverage.out
