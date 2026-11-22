@@ -23,6 +23,7 @@ type reconcileCase struct {
 	holds                          map[uuid.UUID]domain.HoldState
 	holdsErr                       error
 	transfers                      map[uuid.UUID]*domain.BankTransfer
+	refTransfers                   map[string]*domain.BankTransfer // lookups by a non-UUID reference
 	transferErr                    error
 	cancel                         domain.BankTransfer
 	cancelErr                      error
@@ -38,6 +39,7 @@ type reconcileRecord struct {
 	signaled     []uuid.UUID
 	signaledWith []domain.BankOutcome
 	transferFor  []uuid.UUID
+	refLookups   []string
 }
 
 func (c reconcileCase) run(t *testing.T, now time.Time) (dto.ReconcileOutput, reconcileRecord, error) {
@@ -87,7 +89,11 @@ func (c reconcileCase) run(t *testing.T, now time.Time) (dto.ReconcileOutput, re
 	d.bank.EXPECT().GetStatement(Any, now.Add(-time.Hour), now).Return(c.statement, c.statementErr).Maybe()
 	d.bank.EXPECT().GetTransfer(Any, Any).RunAndReturn(func(_ context.Context, ref string) (*domain.BankTransfer, error) {
 		id, err := uuid.Parse(ref)
-		require.NoError(t, err)
+		if err != nil {
+			rec.refLookups = append(rec.refLookups, ref)
+
+			return c.refTransfers[ref], c.transferErr
+		}
 
 		rec.transferFor = append(rec.transferFor, id)
 
@@ -301,6 +307,37 @@ func Test_Reconcile(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, rec.transferFor)
 		require.Empty(t, rec.created)
+	})
+
+	rogue := domain.Discrepancy{
+		ID: uuid.New(), Kind: domain.KindBankUnexpected, Reference: "ROGUE-1", Status: domain.DiscrepancyOpen,
+	}
+	rogueTransfer := &domain.BankTransfer{Reference: "ROGUE-1", Status: domain.BankSucceeded}
+
+	t.Run("15 an open payment-less discrepancy outside the statement is re-checked and still reproduces", func(t *testing.T) {
+		_, rec, err := reconcileCase{
+			open: []domain.Discrepancy{rogue}, refTransfers: map[string]*domain.BankTransfer{"ROGUE-1": rogueTransfer},
+		}.run(t, now)
+		require.NoError(t, err)
+		require.Equal(t, []string{"ROGUE-1"}, rec.refLookups)
+		require.Empty(t, rec.resolved)
+		require.Empty(t, rec.created)
+	})
+
+	t.Run("16 an open payment-less discrepancy the bank no longer has is resolved", func(t *testing.T) {
+		out, rec, err := reconcileCase{open: []domain.Discrepancy{rogue}}.run(t, now)
+		require.NoError(t, err)
+		require.Equal(t, []uuid.UUID{rogue.ID}, rec.resolved)
+		require.Equal(t, 1, out.Resolved)
+		require.Empty(t, rec.created)
+	})
+
+	t.Run("17 a failed re-check aborts before any write", func(t *testing.T) {
+		_, rec, err := reconcileCase{open: []domain.Discrepancy{rogue}, transferErr: domain.ErrBankUnavailable}.run(t, now)
+		require.ErrorIs(t, err, domain.ErrBankUnavailable)
+		require.Empty(t, rec.resolved)
+		require.Empty(t, rec.created)
+		require.Empty(t, rec.outbox)
 	})
 
 	t.Run("a created discrepancy that lost the race emits no event", func(t *testing.T) {

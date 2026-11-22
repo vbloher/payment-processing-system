@@ -59,6 +59,13 @@ func (u *UseCase) Reconcile(ctx context.Context, in dto.ReconcileInput) (dto.Rec
 
 	out.Checked = len(candidates)
 
+	recheck, err := u.recheckPaymentless(ctx, open, findings)
+	if err != nil {
+		return dto.ReconcileOutput{}, err
+	}
+
+	findings = append(findings, recheck...)
+
 	more, err := u.checkPayments(ctx, in, candidates)
 	if err != nil {
 		return dto.ReconcileOutput{}, err
@@ -174,6 +181,37 @@ func (u *UseCase) collectCandidates(
 	}
 
 	return candidates, findings, nil
+}
+
+// recheckPaymentless point-looks-up the open bank_unexpected discrepancies that have no payment and are not
+// in the current statement: an entry that left the statement window is not an entry that was explained.
+func (u *UseCase) recheckPaymentless(
+	ctx context.Context, open []domain.Discrepancy, produced []finding,
+) ([]finding, error) {
+	have := make(map[findingKey]bool, len(produced))
+	for _, f := range produced {
+		have[f.findingKey] = true
+	}
+
+	var findings []finding
+
+	for _, d := range open {
+		key := findingKey{d.Reference, d.Kind}
+		if d.PaymentID != uuid.Nil || d.Kind != domain.KindBankUnexpected || have[key] {
+			continue
+		}
+
+		transfer, err := u.bank.GetTransfer(ctx, d.Reference)
+		if err != nil {
+			return nil, fmt.Errorf("bank.GetTransfer: %w", err)
+		}
+
+		if transfer != nil && transfer.Status == domain.BankSucceeded {
+			findings = append(findings, unexpected(d.Reference))
+		}
+	}
+
+	return findings, nil
 }
 
 // missingIDs lists the payments that the window did not return but the statement or an open discrepancy names.
