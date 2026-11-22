@@ -719,6 +719,78 @@ func (_c *Postgres_GetHolds_Call) RunAndReturn(run func(ctx context.Context, pay
 	return _c
 }
 
+// GetTransaction provides a mock function for the type Postgres
+func (_mock *Postgres) GetTransaction(ctx context.Context, kind domain.TransactionKind, reference string) (domain.Transaction, error) {
+	ret := _mock.Called(ctx, kind, reference)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetTransaction")
+	}
+
+	var r0 domain.Transaction
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, domain.TransactionKind, string) (domain.Transaction, error)); ok {
+		return returnFunc(ctx, kind, reference)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, domain.TransactionKind, string) domain.Transaction); ok {
+		r0 = returnFunc(ctx, kind, reference)
+	} else {
+		r0 = ret.Get(0).(domain.Transaction)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, domain.TransactionKind, string) error); ok {
+		r1 = returnFunc(ctx, kind, reference)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// Postgres_GetTransaction_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetTransaction'
+type Postgres_GetTransaction_Call struct {
+	*mock.Call
+}
+
+// GetTransaction is a helper method to define mock.On call
+//   - ctx context.Context
+//   - kind domain.TransactionKind
+//   - reference string
+func (_e *Postgres_Expecter) GetTransaction(ctx any, kind any, reference any) *Postgres_GetTransaction_Call {
+	return &Postgres_GetTransaction_Call{Call: _e.mock.On("GetTransaction", ctx, kind, reference)}
+}
+
+func (_c *Postgres_GetTransaction_Call) Run(run func(ctx context.Context, kind domain.TransactionKind, reference string)) *Postgres_GetTransaction_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 domain.TransactionKind
+		if args[1] != nil {
+			arg1 = args[1].(domain.TransactionKind)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *Postgres_GetTransaction_Call) Return(transaction domain.Transaction, err error) *Postgres_GetTransaction_Call {
+	_c.Call.Return(transaction, err)
+	return _c
+}
+
+func (_c *Postgres_GetTransaction_Call) RunAndReturn(run func(ctx context.Context, kind domain.TransactionKind, reference string) (domain.Transaction, error)) *Postgres_GetTransaction_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // UpdateAccountBalances provides a mock function for the type Postgres
 func (_mock *Postgres) UpdateAccountBalances(ctx context.Context, account domain.Account) error {
 	ret := _mock.Called(ctx, account)

@@ -17,14 +17,18 @@ func Test_Deposit(t *testing.T) {
 	otel.SilentModeInit()
 
 	tests := []struct {
-		name    string
-		amount  int64
-		created bool
-		wantErr error
-		noCalls bool
+		name      string
+		amount    int64
+		created   bool
+		storedAmt int64 // amount of the stored deposit when created is false
+		bankAsAcc bool
+		wantErr   error
+		noCalls   bool
 	}{
 		{name: "new", amount: 5000, created: true},
-		{name: "duplicate", amount: 5000, created: false},
+		{name: "duplicate, same payload", amount: 5000, storedAmt: 5000},
+		{name: "duplicate, other amount", amount: 5000, storedAmt: 4000, wantErr: domain.ErrIdempotencyConflict},
+		{name: "bank_cash as account", amount: 5000, bankAsAcc: true, wantErr: domain.ErrNotFound, noCalls: true},
 		{name: "bad amount", amount: 0, wantErr: domain.ErrValidation, noCalls: true},
 	}
 
@@ -35,6 +39,11 @@ func Test_Deposit(t *testing.T) {
 
 			postgres := mocks.NewPostgres(t)
 
+			if tt.bankAsAcc {
+				account = bank
+				postgres.EXPECT().GetAccountForUpdate(Any, account.ID).Return(account, nil)
+			}
+
 			if !tt.noCalls {
 				postgres.EXPECT().GetAccountForUpdate(Any, account.ID).Return(account, nil)
 				postgres.EXPECT().GetBankCashForUpdate(Any, "EUR").Return(bank, nil)
@@ -44,6 +53,16 @@ func Test_Deposit(t *testing.T) {
 						tx.Entries[0] == domain.Entry{AccountID: bank.ID, Side: domain.Debit, Amount: 5000} &&
 						tx.Entries[1] == domain.Entry{AccountID: account.ID, Side: domain.Credit, Amount: 5000}
 				})).Return(tt.created, nil)
+			}
+
+			if !tt.created && !tt.noCalls {
+				postgres.EXPECT().GetTransaction(Any, domain.KindDeposit, "dep-1").Return(domain.Transaction{
+					Kind: domain.KindDeposit, Reference: "dep-1", Currency: "EUR",
+					Entries: []domain.Entry{
+						{AccountID: bank.ID, Side: domain.Debit, Amount: tt.storedAmt},
+						{AccountID: account.ID, Side: domain.Credit, Amount: tt.storedAmt},
+					},
+				}, nil)
 			}
 
 			if tt.created {

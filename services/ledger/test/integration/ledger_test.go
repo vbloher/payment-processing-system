@@ -61,6 +61,9 @@ func (s *Suite) Test_Deposit_Idempotent() {
 	s.NoError(s.uc.Deposit(ctx, in))
 	s.NoError(s.uc.Deposit(ctx, in))
 
+	in.Amount = 20000
+	s.ErrorIs(s.uc.Deposit(ctx, in), domain.ErrIdempotencyConflict)
+
 	s.requireBalance(out.ID, 10000, 0, 10000)
 	s.requireLedgerIntact()
 }

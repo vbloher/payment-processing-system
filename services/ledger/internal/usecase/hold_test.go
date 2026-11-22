@@ -29,6 +29,7 @@ func Test_Hold(t *testing.T) {
 		wantErr      error
 		wantWrites   bool
 		wantNoLookup bool
+		bankAsAcc    bool
 	}{
 		{
 			name: "new hold", balance: 10000, amount: 3000, currency: "EUR",
@@ -64,6 +65,10 @@ func Test_Hold(t *testing.T) {
 			wantErr: domain.ErrCurrencyMismatch,
 		},
 		{
+			name: "bank_cash account", balance: 10000, amount: 3000, currency: "EUR",
+			bankAsAcc: true, wantErr: domain.ErrNotFound,
+		},
+		{
 			name: "bad amount", balance: 10000, amount: 0, currency: "EUR",
 			wantErr: domain.ErrValidation, wantNoLookup: true,
 		},
@@ -72,6 +77,10 @@ func Test_Hold(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			account := customer(tt.balance, 0)
+			if tt.bankAsAcc {
+				account = bankCash(tt.balance)
+			}
+
 			postgres := mocks.NewPostgres(t)
 
 			if !tt.wantNoLookup {

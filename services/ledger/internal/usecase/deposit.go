@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/vbloher/payment-processing-system/pkg/otel/tracer"
 	"github.com/vbloher/payment-processing-system/services/ledger/internal/domain"
 	"github.com/vbloher/payment-processing-system/services/ledger/internal/dto"
@@ -26,6 +28,10 @@ func (u *UseCase) Deposit(ctx context.Context, in dto.DepositInput) error {
 			return fmt.Errorf("postgres.GetAccountForUpdate: %w", err)
 		}
 
+		if account.Kind != domain.KindCustomer {
+			return fmt.Errorf("account %s is not a customer account: %w", in.AccountID, domain.ErrNotFound)
+		}
+
 		bankCash, err := u.postgres.GetBankCashForUpdate(ctx, in.Currency)
 		if err != nil {
 			return fmt.Errorf("postgres.GetBankCashForUpdate: %w", err)
@@ -45,7 +51,7 @@ func (u *UseCase) Deposit(ctx context.Context, in dto.DepositInput) error {
 		}
 
 		if !created {
-			return nil
+			return u.checkDepositReplay(ctx, posting, account.ID, in.Amount)
 		}
 
 		return u.postDeposit(ctx, account, bankCash, in)
@@ -78,6 +84,32 @@ func (u *UseCase) postDeposit(
 	err = u.postgres.UpdateAccountBalances(ctx, bankCash)
 	if err != nil {
 		return fmt.Errorf("postgres.UpdateAccountBalances: %w", err)
+	}
+
+	return nil
+}
+
+// checkDepositReplay accepts a repeated deposit only when it matches the stored one.
+func (u *UseCase) checkDepositReplay(
+	ctx context.Context, posting domain.Transaction, accountID uuid.UUID, amount int64,
+) error {
+	existing, err := u.postgres.GetTransaction(ctx, domain.KindDeposit, posting.Reference)
+	if err != nil {
+		return fmt.Errorf("postgres.GetTransaction: %w", err)
+	}
+
+	same := existing.Currency == posting.Currency
+	found := false
+
+	for _, e := range existing.Entries {
+		if e.Side == domain.Credit {
+			found = true
+			same = same && e.AccountID == accountID && e.Amount == amount
+		}
+	}
+
+	if !same || !found {
+		return fmt.Errorf("deposit %q: %w", posting.Reference, domain.ErrIdempotencyConflict)
 	}
 
 	return nil

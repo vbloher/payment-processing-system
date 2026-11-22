@@ -24,6 +24,7 @@ type Postgres interface {
 	UpdateAccountBalances(ctx context.Context, account domain.Account) error
 	// CreateTransaction reports false when a transaction with the same (kind, reference) exists.
 	CreateTransaction(ctx context.Context, tx domain.Transaction) (created bool, err error)
+	GetTransaction(ctx context.Context, kind domain.TransactionKind, reference string) (domain.Transaction, error)
 	CreateHold(ctx context.Context, hold domain.Hold) error
 	GetHold(ctx context.Context, paymentID uuid.UUID) (domain.Hold, error)
 	GetHoldForUpdate(ctx context.Context, paymentID uuid.UUID) (domain.Hold, error)

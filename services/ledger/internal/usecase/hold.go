@@ -26,6 +26,10 @@ func (u *UseCase) Hold(ctx context.Context, in dto.HoldInput) error {
 			return fmt.Errorf("postgres.GetAccountForUpdate: %w", err)
 		}
 
+		if account.Kind != domain.KindCustomer {
+			return fmt.Errorf("account %s is not a customer account: %w", in.AccountID, domain.ErrNotFound)
+		}
+
 		existing, err := u.postgres.GetHold(ctx, in.PaymentID)
 
 		switch {
