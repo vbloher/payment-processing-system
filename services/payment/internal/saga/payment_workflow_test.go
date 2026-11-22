@@ -24,7 +24,8 @@ type PaymentWorkflowSuite struct {
 	suite.Suite
 	testsuite.WorkflowTestSuite
 
-	env *testsuite.TestWorkflowEnvironment
+	env    *testsuite.TestWorkflowEnvironment
+	mocked map[string]bool
 }
 
 func TestPaymentWorkflowSuite(t *testing.T) {
@@ -33,23 +34,61 @@ func TestPaymentWorkflowSuite(t *testing.T) {
 
 func (s *PaymentWorkflowSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
+	s.mocked = map[string]bool{}
 	s.registerStubs()
 }
 
 func (s *PaymentWorkflowSuite) registerStubs() {
+	// Every activity must be mocked with OnActivity so that calls are counted; a stub that
+	// runs means an unmocked activity was invoked and its call would go uncounted.
 	reg := func(fn any, name string) {
 		s.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
 
-	reg(func(context.Context, uuid.UUID) error { return nil }, saga.ActivityStartProcessing)
-	reg(func(context.Context, uuid.UUID) (domain.FailureReason, error) { return "", nil }, saga.ActivityHoldFunds)
-	reg(func(context.Context, uuid.UUID) (domain.BankOutcome, error) { return "", nil }, saga.ActivitySendTransfer)
-	reg(func(context.Context, uuid.UUID) (domain.BankOutcome, error) { return "", nil }, saga.ActivityCancelTransfer)
-	reg(func(context.Context, uuid.UUID) error { return nil }, saga.ActivityCaptureFunds)
-	reg(func(context.Context, uuid.UUID) error { return nil }, saga.ActivityReleaseFunds)
-	reg(func(context.Context, uuid.UUID) error { return nil }, saga.ActivityCompletePayment)
-	reg(func(context.Context, saga.FailPaymentInput) error { return nil }, saga.ActivityFailPayment)
-	reg(func(context.Context, uuid.UUID) error { return nil }, saga.ActivityMarkPaymentForReview)
+	reg(func(context.Context, uuid.UUID) error { return s.unmocked() }, saga.ActivityStartProcessing)
+	reg(func(context.Context, uuid.UUID) (domain.FailureReason, error) { return "", s.unmocked() }, saga.ActivityHoldFunds)
+	reg(func(context.Context, uuid.UUID) (domain.BankOutcome, error) { return "", s.unmocked() }, saga.ActivitySendTransfer)
+	reg(func(context.Context, uuid.UUID) (domain.BankOutcome, error) { return "", s.unmocked() }, saga.ActivityCancelTransfer)
+	reg(func(context.Context, uuid.UUID) error { return s.unmocked() }, saga.ActivityCaptureFunds)
+	reg(func(context.Context, uuid.UUID) error { return s.unmocked() }, saga.ActivityReleaseFunds)
+	reg(func(context.Context, uuid.UUID) error { return s.unmocked() }, saga.ActivityCompletePayment)
+	reg(func(context.Context, saga.FailPaymentInput) error { return s.unmocked() }, saga.ActivityFailPayment)
+	reg(func(context.Context, uuid.UUID) error { return s.unmocked() }, saga.ActivityMarkPaymentForReview)
+}
+
+func (s *PaymentWorkflowSuite) unmocked() error {
+	s.T().Error("an activity without an OnActivity expectation was invoked")
+
+	return errBoom
+}
+
+// on registers an expectation and remembers that the activity is mocked.
+func (s *PaymentWorkflowSuite) on(name string, args ...any) *testsuite.MockCallWrapper {
+	s.mocked[name] = true
+
+	return s.env.OnActivity(name, args...)
+}
+
+// mockRest mocks every activity the test did not mock, with a harmless default, so that an
+// unexpected call is counted and a "must not run" assertion is real.
+func (s *PaymentWorkflowSuite) mockRest() {
+	defaults := map[string][]any{
+		saga.ActivityStartProcessing:      {nil},
+		saga.ActivityHoldFunds:            {domain.ReasonNone, nil},
+		saga.ActivitySendTransfer:         {domain.BankOutcome(""), errBoom},
+		saga.ActivityCancelTransfer:       {domain.BankOutcome(""), errBoom},
+		saga.ActivityCaptureFunds:         {nil},
+		saga.ActivityReleaseFunds:         {nil},
+		saga.ActivityCompletePayment:      {nil},
+		saga.ActivityFailPayment:          {nil},
+		saga.ActivityMarkPaymentForReview: {nil},
+	}
+
+	for name, ret := range defaults {
+		if !s.mocked[name] {
+			s.on(name, mock.Anything, mock.Anything).Return(ret...)
+		}
+	}
 }
 
 func (s *PaymentWorkflowSuite) input(id uuid.UUID) saga.PaymentInput {
@@ -70,10 +109,10 @@ type bankStep struct {
 
 func (s *PaymentWorkflowSuite) onBank(name string, step *bankStep) {
 	if step == nil {
-		return
+		return // mockRest registers a counted default
 	}
 
-	s.env.OnActivity(name, mock.Anything, mock.Anything).Return(step.outcome, step.err)
+	s.on(name, mock.Anything, mock.Anything).Return(step.outcome, step.err)
 }
 
 func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_Table() {
@@ -144,26 +183,26 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_Table() {
 
 			id := uuid.New()
 
-			s.env.OnActivity(saga.ActivityStartProcessing, mock.Anything, id).Return(nil)
-			s.env.OnActivity(saga.ActivityHoldFunds, mock.Anything, id).Return(tt.hold, nil)
+			s.on(saga.ActivityStartProcessing, mock.Anything, id).Return(nil)
+			s.on(saga.ActivityHoldFunds, mock.Anything, id).Return(tt.hold, nil)
 			s.onBank(saga.ActivitySendTransfer, tt.send)
 			s.onBank(saga.ActivityCancelTransfer, tt.cancel)
-			s.env.OnActivity(saga.ActivityMarkPaymentForReview, mock.Anything, id).Return(nil)
-			s.env.OnActivity(saga.ActivityReleaseFunds, mock.Anything, id).Return(nil)
-			s.env.OnActivity(saga.ActivityCompletePayment, mock.Anything, id).Return(nil)
+			s.on(saga.ActivityMarkPaymentForReview, mock.Anything, id).Return(nil)
+			s.on(saga.ActivityReleaseFunds, mock.Anything, id).Return(nil)
+			s.on(saga.ActivityCompletePayment, mock.Anything, id).Return(nil)
 
 			if tt.captureFlaky {
-				s.env.OnActivity(saga.ActivityCaptureFunds, mock.Anything, id).Return(errBoom).Twice()
-				s.env.OnActivity(saga.ActivityCaptureFunds, mock.Anything, id).Return(nil).Once()
+				s.on(saga.ActivityCaptureFunds, mock.Anything, id).Return(errBoom).Twice()
+				s.on(saga.ActivityCaptureFunds, mock.Anything, id).Return(nil).Once()
 			} else {
-				s.env.OnActivity(saga.ActivityCaptureFunds, mock.Anything, id).Return(nil)
+				s.on(saga.ActivityCaptureFunds, mock.Anything, id).Return(nil)
 			}
 
 			if tt.wantReason != domain.ReasonNone {
-				s.env.OnActivity(saga.ActivityFailPayment, mock.Anything,
+				s.on(saga.ActivityFailPayment, mock.Anything,
 					saga.FailPaymentInput{PaymentID: id, Reason: tt.wantReason}).Return(nil)
 			} else {
-				s.env.OnActivity(saga.ActivityFailPayment, mock.Anything, mock.Anything).Return(nil)
+				s.on(saga.ActivityFailPayment, mock.Anything, mock.Anything).Return(nil)
 			}
 
 			if tt.signal != "" {
@@ -172,6 +211,7 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_Table() {
 				}, time.Minute)
 			}
 
+			s.mockRest()
 			s.env.ExecuteWorkflow(saga.PaymentWorkflow, s.input(id))
 
 			require.True(s.T(), s.env.IsWorkflowCompleted())
@@ -204,9 +244,10 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_FatalStopsTheWorkflow() {
 	id := uuid.New()
 	fatal := temporal.NewNonRetryableApplicationError("x", saga.ErrTypeFatal, nil)
 
-	s.env.OnActivity(saga.ActivityStartProcessing, mock.Anything, id).Return(fatal)
-	s.env.OnActivity(saga.ActivityHoldFunds, mock.Anything, id).Return(domain.ReasonNone, nil)
+	s.on(saga.ActivityStartProcessing, mock.Anything, id).Return(fatal)
+	s.on(saga.ActivityHoldFunds, mock.Anything, id).Return(domain.ReasonNone, nil)
 
+	s.mockRest()
 	s.env.ExecuteWorkflow(saga.PaymentWorkflow, s.input(id))
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
@@ -219,10 +260,11 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_FatalFromBankIsNotTreatedAsU
 	id := uuid.New()
 	fatal := temporal.NewNonRetryableApplicationError("x", saga.ErrTypeFatal, nil)
 
-	s.env.OnActivity(saga.ActivityStartProcessing, mock.Anything, id).Return(nil)
-	s.env.OnActivity(saga.ActivityHoldFunds, mock.Anything, id).Return(domain.ReasonNone, nil)
-	s.env.OnActivity(saga.ActivitySendTransfer, mock.Anything, id).Return(domain.BankOutcome(""), fatal)
+	s.on(saga.ActivityStartProcessing, mock.Anything, id).Return(nil)
+	s.on(saga.ActivityHoldFunds, mock.Anything, id).Return(domain.ReasonNone, nil)
+	s.on(saga.ActivitySendTransfer, mock.Anything, id).Return(domain.BankOutcome(""), fatal)
 
+	s.mockRest()
 	s.env.ExecuteWorkflow(saga.PaymentWorkflow, s.input(id))
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
@@ -235,10 +277,11 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_FatalFromBankIsNotTreatedAsU
 func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_UnexpectedOutcomeNeitherCompensatesNorCompletes() {
 	id := uuid.New()
 
-	s.env.OnActivity(saga.ActivityStartProcessing, mock.Anything, id).Return(nil)
-	s.env.OnActivity(saga.ActivityHoldFunds, mock.Anything, id).Return(domain.ReasonNone, nil)
-	s.env.OnActivity(saga.ActivitySendTransfer, mock.Anything, id).Return(domain.BankOutcome("weird"), nil)
+	s.on(saga.ActivityStartProcessing, mock.Anything, id).Return(nil)
+	s.on(saga.ActivityHoldFunds, mock.Anything, id).Return(domain.ReasonNone, nil)
+	s.on(saga.ActivitySendTransfer, mock.Anything, id).Return(domain.BankOutcome("weird"), nil)
 
+	s.mockRest()
 	s.env.ExecuteWorkflow(saga.PaymentWorkflow, s.input(id))
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
