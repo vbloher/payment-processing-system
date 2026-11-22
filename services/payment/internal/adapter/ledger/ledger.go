@@ -122,6 +122,8 @@ func mapHoldError(err error) error {
 
 	var domainErr error
 
+	// Every other code is deliberately unmapped (retryable) and falls to default.
+	//exhaustive:ignore
 	switch code {
 	case codes.NotFound:
 		domainErr = domain.ErrAccountNotFound
@@ -138,6 +140,8 @@ func mapHoldError(err error) error {
 
 // mapSettleError translates a Capture or Release failure: every definitive refusal is a conflict.
 func mapSettleError(err error) error {
+	// Every other code is deliberately unmapped (retryable) and falls to default.
+	//exhaustive:ignore
 	switch code := status.Code(err); code {
 	case codes.NotFound, codes.FailedPrecondition, codes.InvalidArgument, codes.AlreadyExists, codes.Aborted:
 		return fmt.Errorf("%w: %w", domain.ErrLedgerConflict, err)
