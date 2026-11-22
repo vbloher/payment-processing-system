@@ -15,7 +15,7 @@ type Transactor interface {
 	Wrap(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-type Postgres interface {
+type Postgres interface { //nolint:interfacebloat // one port for the service's single database
 	// CreatePayment reports false when a payment with the same idempotency key exists.
 	CreatePayment(ctx context.Context, payment domain.Payment) (bool, error)
 	GetPayment(ctx context.Context, id uuid.UUID) (domain.Payment, error)
@@ -27,6 +27,12 @@ type Postgres interface {
 	ListPaymentsUpdatedBetween(ctx context.Context, from, to time.Time) ([]domain.Payment, error)
 	SaveOutbox(ctx context.Context, events ...domain.Event) error
 	ReadOutbox(ctx context.Context, limit int) ([]domain.Event, error)
+	ListOpenDiscrepancies(ctx context.Context) ([]domain.Discrepancy, error)
+	// CreateDiscrepancy reports false when an open discrepancy exists for (reference, kind).
+	CreateDiscrepancy(ctx context.Context, d domain.Discrepancy) (created bool, err error)
+	ResolveDiscrepancy(ctx context.Context, id uuid.UUID) error
+	// ListDiscrepancies returns the discrepancies with the status, newest first; "" lists all.
+	ListDiscrepancies(ctx context.Context, status domain.DiscrepancyStatus) ([]domain.Discrepancy, error)
 }
 
 type Ledger interface {

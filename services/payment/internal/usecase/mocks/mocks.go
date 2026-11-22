@@ -142,6 +142,72 @@ func (_m *Postgres) EXPECT() *Postgres_Expecter {
 	return &Postgres_Expecter{mock: &_m.Mock}
 }
 
+// CreateDiscrepancy provides a mock function for the type Postgres
+func (_mock *Postgres) CreateDiscrepancy(ctx context.Context, d domain.Discrepancy) (bool, error) {
+	ret := _mock.Called(ctx, d)
+
+	if len(ret) == 0 {
+		panic("no return value specified for CreateDiscrepancy")
+	}
+
+	var r0 bool
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, domain.Discrepancy) (bool, error)); ok {
+		return returnFunc(ctx, d)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, domain.Discrepancy) bool); ok {
+		r0 = returnFunc(ctx, d)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, domain.Discrepancy) error); ok {
+		r1 = returnFunc(ctx, d)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// Postgres_CreateDiscrepancy_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'CreateDiscrepancy'
+type Postgres_CreateDiscrepancy_Call struct {
+	*mock.Call
+}
+
+// CreateDiscrepancy is a helper method to define mock.On call
+//   - ctx context.Context
+//   - d domain.Discrepancy
+func (_e *Postgres_Expecter) CreateDiscrepancy(ctx any, d any) *Postgres_CreateDiscrepancy_Call {
+	return &Postgres_CreateDiscrepancy_Call{Call: _e.mock.On("CreateDiscrepancy", ctx, d)}
+}
+
+func (_c *Postgres_CreateDiscrepancy_Call) Run(run func(ctx context.Context, d domain.Discrepancy)) *Postgres_CreateDiscrepancy_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 domain.Discrepancy
+		if args[1] != nil {
+			arg1 = args[1].(domain.Discrepancy)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *Postgres_CreateDiscrepancy_Call) Return(created bool, err error) *Postgres_CreateDiscrepancy_Call {
+	_c.Call.Return(created, err)
+	return _c
+}
+
+func (_c *Postgres_CreateDiscrepancy_Call) RunAndReturn(run func(ctx context.Context, d domain.Discrepancy) (bool, error)) *Postgres_CreateDiscrepancy_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // CreatePayment provides a mock function for the type Postgres
 func (_mock *Postgres) CreatePayment(ctx context.Context, payment domain.Payment) (bool, error) {
 	ret := _mock.Called(ctx, payment)
@@ -474,6 +540,136 @@ func (_c *Postgres_GetPayments_Call) RunAndReturn(run func(ctx context.Context, 
 	return _c
 }
 
+// ListDiscrepancies provides a mock function for the type Postgres
+func (_mock *Postgres) ListDiscrepancies(ctx context.Context, status domain.DiscrepancyStatus) ([]domain.Discrepancy, error) {
+	ret := _mock.Called(ctx, status)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListDiscrepancies")
+	}
+
+	var r0 []domain.Discrepancy
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, domain.DiscrepancyStatus) ([]domain.Discrepancy, error)); ok {
+		return returnFunc(ctx, status)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, domain.DiscrepancyStatus) []domain.Discrepancy); ok {
+		r0 = returnFunc(ctx, status)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]domain.Discrepancy)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, domain.DiscrepancyStatus) error); ok {
+		r1 = returnFunc(ctx, status)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// Postgres_ListDiscrepancies_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ListDiscrepancies'
+type Postgres_ListDiscrepancies_Call struct {
+	*mock.Call
+}
+
+// ListDiscrepancies is a helper method to define mock.On call
+//   - ctx context.Context
+//   - status domain.DiscrepancyStatus
+func (_e *Postgres_Expecter) ListDiscrepancies(ctx any, status any) *Postgres_ListDiscrepancies_Call {
+	return &Postgres_ListDiscrepancies_Call{Call: _e.mock.On("ListDiscrepancies", ctx, status)}
+}
+
+func (_c *Postgres_ListDiscrepancies_Call) Run(run func(ctx context.Context, status domain.DiscrepancyStatus)) *Postgres_ListDiscrepancies_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 domain.DiscrepancyStatus
+		if args[1] != nil {
+			arg1 = args[1].(domain.DiscrepancyStatus)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *Postgres_ListDiscrepancies_Call) Return(discrepancys []domain.Discrepancy, err error) *Postgres_ListDiscrepancies_Call {
+	_c.Call.Return(discrepancys, err)
+	return _c
+}
+
+func (_c *Postgres_ListDiscrepancies_Call) RunAndReturn(run func(ctx context.Context, status domain.DiscrepancyStatus) ([]domain.Discrepancy, error)) *Postgres_ListDiscrepancies_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ListOpenDiscrepancies provides a mock function for the type Postgres
+func (_mock *Postgres) ListOpenDiscrepancies(ctx context.Context) ([]domain.Discrepancy, error) {
+	ret := _mock.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListOpenDiscrepancies")
+	}
+
+	var r0 []domain.Discrepancy
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context) ([]domain.Discrepancy, error)); ok {
+		return returnFunc(ctx)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context) []domain.Discrepancy); ok {
+		r0 = returnFunc(ctx)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]domain.Discrepancy)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = returnFunc(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// Postgres_ListOpenDiscrepancies_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ListOpenDiscrepancies'
+type Postgres_ListOpenDiscrepancies_Call struct {
+	*mock.Call
+}
+
+// ListOpenDiscrepancies is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *Postgres_Expecter) ListOpenDiscrepancies(ctx any) *Postgres_ListOpenDiscrepancies_Call {
+	return &Postgres_ListOpenDiscrepancies_Call{Call: _e.mock.On("ListOpenDiscrepancies", ctx)}
+}
+
+func (_c *Postgres_ListOpenDiscrepancies_Call) Run(run func(ctx context.Context)) *Postgres_ListOpenDiscrepancies_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *Postgres_ListOpenDiscrepancies_Call) Return(discrepancys []domain.Discrepancy, err error) *Postgres_ListOpenDiscrepancies_Call {
+	_c.Call.Return(discrepancys, err)
+	return _c
+}
+
+func (_c *Postgres_ListOpenDiscrepancies_Call) RunAndReturn(run func(ctx context.Context) ([]domain.Discrepancy, error)) *Postgres_ListOpenDiscrepancies_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ListPaymentsByStatus provides a mock function for the type Postgres
 func (_mock *Postgres) ListPaymentsByStatus(ctx context.Context, status domain.Status) ([]domain.Payment, error) {
 	ret := _mock.Called(ctx, status)
@@ -680,6 +876,63 @@ func (_c *Postgres_ReadOutbox_Call) Return(events []domain.Event, err error) *Po
 }
 
 func (_c *Postgres_ReadOutbox_Call) RunAndReturn(run func(ctx context.Context, limit int) ([]domain.Event, error)) *Postgres_ReadOutbox_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ResolveDiscrepancy provides a mock function for the type Postgres
+func (_mock *Postgres) ResolveDiscrepancy(ctx context.Context, id uuid.UUID) error {
+	ret := _mock.Called(ctx, id)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ResolveDiscrepancy")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, uuid.UUID) error); ok {
+		r0 = returnFunc(ctx, id)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// Postgres_ResolveDiscrepancy_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ResolveDiscrepancy'
+type Postgres_ResolveDiscrepancy_Call struct {
+	*mock.Call
+}
+
+// ResolveDiscrepancy is a helper method to define mock.On call
+//   - ctx context.Context
+//   - id uuid.UUID
+func (_e *Postgres_Expecter) ResolveDiscrepancy(ctx any, id any) *Postgres_ResolveDiscrepancy_Call {
+	return &Postgres_ResolveDiscrepancy_Call{Call: _e.mock.On("ResolveDiscrepancy", ctx, id)}
+}
+
+func (_c *Postgres_ResolveDiscrepancy_Call) Run(run func(ctx context.Context, id uuid.UUID)) *Postgres_ResolveDiscrepancy_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 uuid.UUID
+		if args[1] != nil {
+			arg1 = args[1].(uuid.UUID)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *Postgres_ResolveDiscrepancy_Call) Return(err error) *Postgres_ResolveDiscrepancy_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *Postgres_ResolveDiscrepancy_Call) RunAndReturn(run func(ctx context.Context, id uuid.UUID) error) *Postgres_ResolveDiscrepancy_Call {
 	_c.Call.Return(run)
 	return _c
 }
