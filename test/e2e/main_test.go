@@ -12,24 +12,30 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/vbloher/payment-processing-system/gen/ledger/grpc/ledger_v1"
 	"github.com/vbloher/payment-processing-system/pkg/httpserver"
-	"github.com/vbloher/payment-processing-system/pkg/otel"
+	"github.com/vbloher/payment-processing-system/pkg/otel/tracer"
 	"github.com/vbloher/payment-processing-system/pkg/temporalclient"
 	"github.com/vbloher/payment-processing-system/pkg/testinfra"
 	"github.com/vbloher/payment-processing-system/services/ledger"
 	"github.com/vbloher/payment-processing-system/services/mockbank"
+	"github.com/vbloher/payment-processing-system/services/notification"
 	"github.com/vbloher/payment-processing-system/services/payment"
 
 	bank_client "github.com/vbloher/payment-processing-system/gen/mockbank/http/client"
 	payment_client "github.com/vbloher/payment-processing-system/gen/payment/http/client"
 	ledger_config "github.com/vbloher/payment-processing-system/services/ledger/config"
 	mockbank_config "github.com/vbloher/payment-processing-system/services/mockbank/config"
+	notification_config "github.com/vbloher/payment-processing-system/services/notification/config"
 	payment_config "github.com/vbloher/payment-processing-system/services/payment/config"
+	otelapi "go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 const stopTimeout = 30 * time.Second
@@ -50,8 +56,10 @@ type Suite struct {
 	paymentDB *pgx.Conn
 	ledgerDB  *pgx.Conn
 
-	paymentURL string    // base URL of the payment API, for requests the generated client cannot express
-	services   []service // started services, in start order
+	paymentURL string                  // base URL of the payment API, for requests the generated client cannot express
+	webhook    *webhookRecorder        // the notification service's webhook
+	spans      *tracetest.SpanRecorder // spans of every service
+	services   []service               // started services, in start order
 	parents    []*require.Assertions
 }
 
@@ -65,18 +73,27 @@ type service struct {
 func (s *Suite) SetupSuite() {
 	s.Assertions = s.Require()
 
-	// The tracer is a package global; Run leaves it to the caller.
-	otel.SilentModeInit()
+	// The tracer and the propagator are package globals; Run leaves them to the caller. Every
+	// service records into one span recorder, and the TraceContext propagator carries the trace
+	// through the outbox and the NATS headers, as in the template's integration suite.
+	s.spans = tracetest.NewSpanRecorder()
+	otelapi.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)))
+	otelapi.SetTextMapPropagator(propagation.TraceContext{})
+	tracer.Init(otelapi.Tracer(""))
 
 	pg := testinfra.StartPostgres(s.T(), "payment", "ledger", "notification")
 	s.migrate(pg, "payment")
 	s.migrate(pg, "ledger")
+	s.migrate(pg, "notification")
 
 	natsConfig := testinfra.StartNATS(s.T())
 	temporalConfig := testinfra.StartTemporal(s.T())
 
-	// TearDownSuite does not run when SetupSuite fails. Registered after the containers,
-	// this cleanup then stops the services before the containers they use.
+	s.webhook = newWebhookRecorder(s.T())
+	s.T().Cleanup(s.webhook.Close)
+
+	// TearDownSuite does not run when SetupSuite fails. Registered after the containers and the
+	// webhook, this cleanup then stops the services before the things they use.
 	s.T().Cleanup(s.stopServices)
 
 	bankPort := testinfra.FreePort(s.T())
@@ -109,6 +126,22 @@ func (s *Suite) SetupSuite() {
 	paymentConfig.OutboxWorker.Interval = 100 * time.Millisecond
 	paymentConfig.OutboxWorker.Limit = 100
 	s.start("payment", paymentPort, func(ctx context.Context) error { return payment.Run(ctx, paymentConfig) })
+
+	notificationPort := testinfra.FreePort(s.T())
+	notificationConfig := notification_config.Config{
+		HTTP:     httpserver.Config{Port: notificationPort},
+		Postgres: pg.Config("notification"),
+		NATS:     natsConfig,
+	}
+	notificationConfig.Consumer.Durable = "notification"
+	notificationConfig.Consumer.MaxDeliver = 5
+	notificationConfig.Consumer.RetryDelay = 100 * time.Millisecond
+	notificationConfig.Consumer.AckWait = 10 * time.Second
+	notificationConfig.Webhook.URL = s.webhook.URL
+	notificationConfig.Webhook.Timeout = 2 * time.Second
+	s.start("notification", notificationPort, func(ctx context.Context) error {
+		return notification.Run(ctx, notificationConfig)
+	})
 
 	s.connect(pg, temporalConfig, ledgerAddr, bankURL, "http://127.0.0.1:"+paymentPort+"/api/v1")
 }

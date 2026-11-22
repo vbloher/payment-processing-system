@@ -4,15 +4,22 @@ package e2e
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/vbloher/payment-processing-system/gen/ledger/grpc/ledger_v1"
+	"github.com/vbloher/payment-processing-system/pkg/events"
 
 	payment_client "github.com/vbloher/payment-processing-system/gen/payment/http/client"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 const (
@@ -151,4 +158,115 @@ func (s *Suite) countPayments() int {
 	s.NoError(s.paymentDB.QueryRow(context.Background(), "SELECT count(*) FROM payment").Scan(&n))
 
 	return n
+}
+
+// webhookCall is a notification the webhook recorder received.
+type webhookCall struct {
+	IdempotencyKey string
+	Envelope       events.Envelope
+}
+
+// webhookRecorder is the notification service's webhook: it records every call and answers 200.
+type webhookRecorder struct {
+	*httptest.Server
+
+	mu    sync.Mutex
+	calls []webhookCall
+}
+
+func newWebhookRecorder(t *testing.T) *webhookRecorder {
+	w := &webhookRecorder{}
+
+	w.Server = httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			rw.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		e, err := events.Unmarshal(body)
+		if err != nil {
+			t.Errorf("webhook: %s %s: %v", r.Method, body, err)
+			rw.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		w.mu.Lock()
+		w.calls = append(w.calls, webhookCall{IdempotencyKey: r.Header.Get("Idempotency-Key"), Envelope: e})
+		w.mu.Unlock()
+
+		rw.WriteHeader(http.StatusOK)
+	}))
+
+	return w
+}
+
+func (w *webhookRecorder) filter(keep func(c webhookCall) bool) []webhookCall {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	var calls []webhookCall
+
+	for _, c := range w.calls {
+		if keep(c) {
+			calls = append(calls, c)
+		}
+	}
+
+	return calls
+}
+
+// webhookCalls returns the webhook calls received so far for the payment.
+func (s *Suite) webhookCalls(paymentID uuid.UUID) []webhookCall {
+	return s.webhook.filter(func(c webhookCall) bool { return c.Envelope.PaymentID == paymentID })
+}
+
+// webhookCallsOfType returns the webhook calls received so far for the event type.
+func (s *Suite) webhookCallsOfType(t events.Type) []webhookCall {
+	return s.webhook.filter(func(c webhookCall) bool { return c.Envelope.Type == t })
+}
+
+// waitWebhookCall waits for the first webhook call for the payment and returns it.
+func (s *Suite) waitWebhookCall(paymentID uuid.UUID) webhookCall {
+	var calls []webhookCall
+
+	s.Eventually(func() bool {
+		calls = s.webhookCalls(paymentID)
+
+		return len(calls) > 0
+	}, waitTimeout, waitTick, "no webhook call for payment %s", paymentID)
+
+	return calls[0]
+}
+
+// endedSpan returns the ended span with the name and the messaging.message.id, or nil.
+func (s *Suite) endedSpan(name, messageID string) sdktrace.ReadOnlySpan {
+	for _, span := range s.spans.Ended() {
+		if span.Name() != name {
+			continue
+		}
+
+		for _, attr := range span.Attributes() {
+			if attr.Key == "messaging.message.id" && attr.Value.AsString() == messageID {
+				return span
+			}
+		}
+	}
+
+	return nil
+}
+
+// spanNames returns the names of the ended spans of the trace.
+func (s *Suite) spanNames(traceID trace.TraceID) []string {
+	var names []string
+
+	for _, span := range s.spans.Ended() {
+		if span.SpanContext().TraceID() == traceID {
+			names = append(names, span.Name())
+		}
+	}
+
+	return names
 }
