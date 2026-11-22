@@ -86,6 +86,7 @@ func (e Envelope) Marshal() ([]byte, error) {
 // input is not JSON, or when the ID is zero or the Type is empty.
 func Unmarshal(b []byte) (Envelope, error) {
 	var e Envelope
+
 	err := json.Unmarshal(b, &e)
 	if err != nil {
 		return Envelope{}, fmt.Errorf("events.Unmarshal: %w: %w", ErrInvalidEnvelope, err)
