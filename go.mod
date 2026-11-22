@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/caarlos0/env/v11 v11.4.1
+	github.com/doug-martin/goqu/v9 v9.19.0
 	github.com/getkin/kin-openapi v0.151.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
