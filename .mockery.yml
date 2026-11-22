@@ -12,3 +12,6 @@ packages:
   github.com/vbloher/payment-processing-system/services/ledger/internal/usecase:
     config:
       all: True
+  github.com/vbloher/payment-processing-system/services/payment/internal/usecase:
+    config:
+      all: True
