@@ -102,6 +102,12 @@ func (s *Suite) Test_UpdatePayment() {
 	s.NoError(err)
 	s.True(created)
 
+	// CreatePayment stores the app clock's timestamps, UpdatePayment the database clock's.
+	// The two clocks differ by up to a millisecond, so compare two database-clock values:
+	// a first update moves updated_at onto the database clock, the second must move it forward.
+	p.Status = domain.StatusProcessing
+	s.NoError(s.pg.UpdatePayment(ctx, p))
+
 	before, err := s.pg.GetPayment(ctx, p.ID)
 	s.NoError(err)
 
