@@ -1,0 +1,281 @@
+openapi: 3.0.3
+info:
+  title: Mock Bank API
+  version: 1.0.0
+  description: Mock bank core with deterministic failure modes and admin fault controls
+servers:
+  - url: /api/v1
+tags:
+  - name: Transfers
+  - name: Admin
+paths:
+  /transfers:
+    post:
+      tags: [Transfers]
+      operationId: createTransfer
+      summary: Create a transfer idempotently by Idempotency-Key
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransferInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/TransferOK'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/Timeout'
+  /transfers/{reference}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/Reference'
+    post:
+      tags: [Transfers]
+      operationId: cancelTransfer
+      summary: Cancel a transfer, fencing the reference when it is unknown
+      responses:
+        '200':
+          $ref: '#/components/responses/TransferOK'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /transfers/{reference}:
+    parameters:
+      - $ref: '#/components/parameters/Reference'
+    get:
+      tags: [Transfers]
+      operationId: getTransfer
+      summary: Get a transfer by reference
+      responses:
+        '200':
+          $ref: '#/components/responses/TransferOK'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /statement:
+    get:
+      tags: [Transfers]
+      operationId: getStatement
+      summary: Succeeded transfers created within a time range
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Statement
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Statement'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/availability:
+    put:
+      tags: [Admin]
+      operationId: setAvailability
+      summary: Turn the whole bank on or off
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetAvailabilityInput'
+      responses:
+        '204':
+          description: Availability changed
+  /admin/transfers:
+    post:
+      tags: [Admin]
+      operationId: addTransfer
+      summary: Store a succeeded transfer as is
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddTransferInput'
+      responses:
+        '201':
+          description: Transfer stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+  /admin/transfers/{reference}:
+    parameters:
+      - $ref: '#/components/parameters/Reference'
+    patch:
+      tags: [Admin]
+      operationId: setTransferAmount
+      summary: Change the amount of a stored transfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTransferAmountInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/TransferOK'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    Reference:
+      name: reference
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    TransferOK:
+      description: Transfer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Transfer'
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Idempotency key reused with a different request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unavailable:
+      description: Bank unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Timeout:
+      description: Bank timeout
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    CreateTransferInput:
+      type: object
+      required: [amount, currency, beneficiary]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          example: 3000
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          example: EUR
+        beneficiary:
+          type: string
+          minLength: 1
+          maxLength: 140
+          example: DE-OK-1
+    AddTransferInput:
+      type: object
+      required: [reference, amount, currency, beneficiary]
+      properties:
+        reference:
+          type: string
+          minLength: 1
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        beneficiary:
+          type: string
+          minLength: 1
+          maxLength: 140
+    SetAvailabilityInput:
+      type: object
+      required: [available]
+      properties:
+        available:
+          type: boolean
+    SetTransferAmountInput:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+    Transfer:
+      type: object
+      required: [id, reference, amount, currency, beneficiary, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        beneficiary:
+          type: string
+        status:
+          type: string
+          enum: [succeeded, declined, cancelled]
+        decline_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    Statement:
+      type: object
+      required: [transfers]
+      properties:
+        transfers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transfer'
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
