@@ -57,6 +57,7 @@ type ConsumerSuite struct {
 	nats    *natsjs.Client
 	webhook *webhookServer
 
+	config      config.Config // the service's configuration for every test but the one that restarts it
 	stopService context.CancelFunc
 	serviceDone chan error
 }
@@ -79,22 +80,14 @@ func (s *ConsumerSuite) SetupSuite() {
 	s.webhook = newWebhookServer()
 	s.T().Cleanup(s.webhook.Close)
 
-	c := config.Config{Postgres: pg.Config("notification"), NATS: natsConfig}
-	c.HTTP.Port = testinfra.FreePort(s.T())
-	c.Consumer = nats_consumer.Config{
+	s.config = config.Config{Postgres: pg.Config("notification"), NATS: natsConfig}
+	s.config.Consumer = nats_consumer.Config{
 		Durable: durable, MaxDeliver: maxDeliver, RetryDelay: 100 * time.Millisecond, AckWait: 30 * time.Second,
 	}
-	c.Webhook = webhook.Config{URL: s.webhook.URL, Timeout: 2 * time.Second}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	s.stopService = cancel
-	s.serviceDone = make(chan error, 1)
-
-	go func() { s.serviceDone <- notification.Run(ctx, c) }()
+	s.config.Webhook = webhook.Config{URL: s.webhook.URL, Timeout: 2 * time.Second}
 
 	s.T().Cleanup(s.stop)
-
-	testinfra.WaitHTTP(s.T(), "http://127.0.0.1:"+c.HTTP.Port+"/ready")
+	s.start(s.config)
 
 	pool, err := postgres.New(context.Background(), pg.Config("notification"))
 	s.NoError(err)
@@ -111,9 +104,28 @@ func (s *ConsumerSuite) SetupTest() {
 	s.Assertions = s.Require()
 }
 
+// start runs the service with the configuration on a free port and waits until it is ready.
+func (s *ConsumerSuite) start(c config.Config) {
+	c.HTTP.Port = testinfra.FreePort(s.T())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() { done <- notification.Run(ctx, c) }()
+
+	s.stopService, s.serviceDone = cancel, done
+
+	testinfra.WaitHTTP(s.T(), "http://127.0.0.1:"+c.HTTP.Port+"/ready")
+}
+
 // stop cancels the service and requires its Run to return nil.
 func (s *ConsumerSuite) stop() {
+	if s.stopService == nil {
+		return
+	}
+
 	s.stopService()
+	s.stopService = nil
 
 	select {
 	case err := <-s.serviceDone:
@@ -121,6 +133,12 @@ func (s *ConsumerSuite) stop() {
 	case <-time.After(stopTimeout):
 		s.Assert().Fail("notification.Run did not return after its context was cancelled")
 	}
+}
+
+// restart stops the service and starts it again with the configuration, on the same durable.
+func (s *ConsumerSuite) restart(c config.Config) {
+	s.stop()
+	s.start(c)
 }
 
 func (s *ConsumerSuite) Test_Consumer_DeliversOnce() {
@@ -229,6 +247,57 @@ func (s *ConsumerSuite) Test_Consumer_ExhaustedDeliveryGoesToDLQ() {
 	s.Equal(domain.StatusPending, s.notificationStatus(e.ID))
 }
 
+// A delivery that runs into the handler deadline is still dead-lettered on its last attempt,
+// although the handler's context has expired by then. The consumer pulls one message at a time,
+// so a message queued behind the stuck one spends no deliveries while it waits.
+func (s *ConsumerSuite) Test_Consumer_TimedOutDeliveryGoesToDLQ() {
+	// Only this test runs with a short AckWait: the handler deadline is 1.6s.
+	c := s.config
+	c.Consumer.AckWait = 2 * time.Second
+	c.Webhook.Timeout = time.Second
+
+	s.restart(c)
+	defer s.restart(s.config)
+
+	stuck, next := s.envelope(), s.envelope()
+
+	payload, err := stuck.Marshal()
+	s.NoError(err)
+
+	s.waitAcked(s.streamLastSeq())
+
+	// An open transaction holding stuck's inbox row makes the consumer's insert wait, every
+	// delivery, until the handler deadline cancels it.
+	lock, err := s.pool.Begin(s.T().Context())
+	s.NoError(err)
+
+	defer func() { _ = lock.Rollback(context.Background()) }()
+
+	_, err = lock.Exec(s.T().Context(),
+		"INSERT INTO inbox (event_id, event_type) VALUES ($1, $2)", stuck.ID, string(stuck.Type))
+	s.NoError(err)
+
+	before := s.dlqLastSeq()
+	stuckSeq := s.publish(stuck.Type.Subject(), payload, stuck.ID.String())
+
+	s.Eventually(func() bool { return s.lastDelivered() >= stuckSeq }, waitTimeout, waitTick)
+
+	// While stuck is being handled, next stays on the server: nothing was fetched ahead.
+	nextSeq := s.publishEnvelope(next, next.ID.String())
+	s.Never(func() bool { return s.lastDelivered() >= nextSeq }, 300*time.Millisecond, waitTick,
+		"message %d was fetched while message %d was being handled", nextSeq, stuckSeq)
+
+	// next goes through between stuck's attempts; stuck reaches the DLQ after its last one.
+	s.waitNotificationStatus(next.ID, domain.StatusSent)
+	s.Eventually(func() bool { return len(s.deadLettersAfter(before, payload)) > 0 },
+		3*waitTimeout, waitTick, "event %s did not reach the DLQ", stuck.ID)
+
+	s.waitAcked(nextSeq)
+	s.Len(s.deadLettersAfter(before, payload), 1)
+	s.Empty(s.webhook.callsFor(stuck.ID))
+	s.Len(s.webhook.callsFor(next.ID), 1)
+}
+
 func Test_Sender_NoURL(t *testing.T) {
 	otel.SilentModeInit()
 
@@ -279,6 +348,32 @@ func (s *ConsumerSuite) waitAcked(seq uint64) {
 
 		return err == nil && info.AckFloor.Stream >= seq
 	}, waitTimeout, waitTick, "messages up to stream sequence %d are not settled", seq)
+}
+
+// lastDelivered returns the stream sequence of the last message delivered to the consumer.
+// It asserts nothing, so that Eventually can call it.
+func (s *ConsumerSuite) lastDelivered() uint64 {
+	consumer, err := s.nats.JS.Consumer(context.Background(), events.StreamName, durable)
+	if err != nil {
+		return 0
+	}
+
+	info, err := consumer.Info(context.Background())
+	if err != nil {
+		return 0
+	}
+
+	return info.Delivered.Stream
+}
+
+func (s *ConsumerSuite) streamLastSeq() uint64 {
+	stream, err := s.nats.JS.Stream(s.T().Context(), events.StreamName)
+	s.NoError(err)
+
+	info, err := stream.Info(s.T().Context())
+	s.NoError(err)
+
+	return info.State.LastSeq
 }
 
 func (s *ConsumerSuite) dlqLastSeq() uint64 {

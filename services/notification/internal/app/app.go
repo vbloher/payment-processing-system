@@ -26,6 +26,12 @@ import (
 // It touches no process-global state, so several services can run in one process.
 // Components close in reverse order: controllers first, then adapters.
 func Run(ctx context.Context, c config.Config) error {
+	// Checked here rather than in config.New, so that configs built by hand are checked too.
+	err := c.Validate()
+	if err != nil {
+		return fmt.Errorf("config.Validate: %w", err)
+	}
+
 	pgPool, err := pgpool.New(ctx, c.Postgres)
 	if err != nil {
 		return fmt.Errorf("postgres.New: %w", err)

@@ -23,6 +23,8 @@ const (
 	defaultHTTPPort = "8082" // pkg/httpserver defaults to 8080, which is the payment service's port.
 )
 
+var ErrInvalidConfig = errors.New("config: invalid")
+
 type Config struct {
 	HTTP     httpserver.Config
 	Logger   logger.Config
@@ -51,4 +53,18 @@ func New() (Config, error) {
 	}
 
 	return config, nil
+}
+
+// Validate checks the settings that depend on each other. A webhook call must time out before
+// the consumer's handler deadline: otherwise a slow receiver uses up the handler's whole time on
+// every delivery, and a timeout of 0 would leave the call bounded by that deadline alone.
+func (c Config) Validate() error {
+	handlerTimeout := c.Consumer.HandlerTimeout()
+
+	if c.Webhook.Timeout <= 0 || c.Webhook.Timeout >= handlerTimeout {
+		return fmt.Errorf("%w: webhook timeout %s must be positive and below the consumer's handler timeout %s",
+			ErrInvalidConfig, c.Webhook.Timeout, handlerTimeout)
+	}
+
+	return nil
 }

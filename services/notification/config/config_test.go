@@ -64,6 +64,36 @@ func Test_New_Override(t *testing.T) {
 	require.Equal(t, 7, c.Consumer.MaxDeliver)
 }
 
+func Test_Validate(t *testing.T) {
+	// AckWait 10s leaves the handler 8s per delivery; the rest is kept to settle the message.
+	tests := []struct {
+		name           string
+		webhookTimeout time.Duration
+		wantErr        bool
+	}{
+		{name: "below the handler timeout", webhookTimeout: 7 * time.Second},
+		{name: "no timeout", webhookTimeout: 0, wantErr: true},
+		{name: "negative", webhookTimeout: -time.Second, wantErr: true},
+		{name: "equal to the handler timeout", webhookTimeout: 8 * time.Second, wantErr: true},
+		{name: "equal to the ack wait", webhookTimeout: 10 * time.Second, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c config.Config
+			c.Consumer.AckWait = 10 * time.Second
+			c.Webhook.Timeout = tt.webhookTimeout
+
+			err := c.Validate()
+			if tt.wantErr {
+				require.ErrorIs(t, err, config.ErrInvalidConfig)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func Test_New_RequiresNATS(t *testing.T) {
 	t.Chdir(t.TempDir())
 	setRequired(t)
