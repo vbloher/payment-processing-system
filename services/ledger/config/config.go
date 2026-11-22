@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
@@ -13,6 +14,11 @@ import (
 	"github.com/vbloher/payment-processing-system/pkg/otel"
 	"github.com/vbloher/payment-processing-system/pkg/postgres"
 	"github.com/vbloher/payment-processing-system/services/ledger/internal/controller/grpc"
+)
+
+const (
+	httpPortEnv     = "HTTP_PORT"
+	defaultHTTPPort = "8081" // pkg/httpserver defaults to 8080, which is the payment service's port.
 )
 
 type Config struct {
@@ -34,6 +40,10 @@ func New() (Config, error) {
 	err = env.Parse(&config)
 	if err != nil {
 		return config, fmt.Errorf("env.Parse: %w", err)
+	}
+
+	if _, ok := os.LookupEnv(httpPortEnv); !ok {
+		config.HTTP.Port = defaultHTTPPort
 	}
 
 	return config, nil
