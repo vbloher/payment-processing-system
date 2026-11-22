@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package ledger_v1;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/vbloher/payment-processing-system/gen/ledger/grpc/ledger_v1";
+
+service LedgerV1 {
+  rpc OpenAccount(OpenAccountInput) returns (OpenAccountOutput);
+  rpc Deposit(DepositInput) returns (google.protobuf.Empty);
+  rpc GetBalance(GetBalanceInput) returns (GetBalanceOutput);
+  rpc Hold(HoldInput) returns (google.protobuf.Empty);
+  rpc Capture(CaptureInput) returns (google.protobuf.Empty);
+  rpc Release(ReleaseInput) returns (google.protobuf.Empty);
+  rpc GetHolds(GetHoldsInput) returns (GetHoldsOutput);
+}
+
+message OpenAccountInput { string currency = 1; }
+message OpenAccountOutput { string id = 1; }
+message DepositInput { string account_id = 1; int64 amount = 2; string currency = 3; string idempotency_key = 4; }
+message GetBalanceInput { string account_id = 1; }
+message GetBalanceOutput { int64 balance = 1; int64 held = 2; int64 available = 3; string currency = 4; }
+message HoldInput { string payment_id = 1; string account_id = 2; int64 amount = 3; string currency = 4; }
+message CaptureInput { string payment_id = 1; }
+message ReleaseInput { string payment_id = 1; }
+message GetHoldsInput { repeated string payment_ids = 1; }
+message GetHoldsOutput {
+  repeated Hold holds = 1;
+
+  message Hold { string payment_id = 1; string account_id = 2; int64 amount = 3; string currency = 4; string status = 5; }
+}

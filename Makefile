@@ -14,7 +14,7 @@ PROTOC_ARCH := $(shell uname -m | sed 's/arm64/aarch_64/;s/aarch64/aarch_64/')
 lint:
 	$(LOCAL_BIN)/golangci-lint run
 
-generate:
+generate: grpc_gen
 	go generate ./...
 	go tool mockery
 
@@ -44,3 +44,13 @@ lint-install:
 
 migrate-install:
 	GOBIN=$(LOCAL_BIN) go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION)
+
+grpc_gen:
+	mkdir -p ./gen/ledger/grpc/ledger_v1
+	$(PROTOC) \
+	  --proto_path=api/ledger/grpc \
+	  --go_out=./gen/ledger/grpc/ledger_v1 --go_opt=paths=source_relative \
+	  --plugin=protoc-gen-go=$(LOCAL_BIN)/protoc-gen-go \
+	  --go-grpc_out=./gen/ledger/grpc/ledger_v1 --go-grpc_opt=paths=source_relative \
+	  --plugin=protoc-gen-go-grpc=$(LOCAL_BIN)/protoc-gen-go-grpc \
+	  ledger_v1.proto
