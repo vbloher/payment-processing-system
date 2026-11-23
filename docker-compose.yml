@@ -46,7 +46,10 @@ services:
 
   temporal:
     image: temporalio/temporal:1.10.1
-    command: ['server', 'start-dev', '--ip', '0.0.0.0']
+    # A file-backed store: workflows and the reconciliation schedule survive a container restart.
+    command: ['server', 'start-dev', '--ip', '0.0.0.0', '--db-filename', '/home/temporal/temporal.db']
+    volumes:
+      - temporal-data:/home/temporal
     ports:
       - '7233:7233'
       - '8233:8233'
@@ -176,3 +179,6 @@ services:
       interval: 2s
       timeout: 5s
       retries: 15
+
+volumes:
+  temporal-data:

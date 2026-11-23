@@ -95,8 +95,10 @@ make down       # stops everything and removes the volumes
 | Postgres            | localhost:5433, user `login`, password `pass`                 |
 | Probes and metrics  | `/live`, `/ready`, `/metrics` on each service's HTTP port: payment 8080, ledger 8081, notification 8082, mockbank 8090 |
 
-Postgres is published on 5433, not 5432, because 5432 is often taken by a developer's own Postgres. No webhook URL is
-configured in compose, so the notifier logs each notification: `docker compose logs -f notification`.
+Postgres is published on 5433, not 5432, because 5432 is often taken by a developer's own Postgres. Temporal runs as
+the dev server with its store in a file on a volume, so workflows waiting in `review` and the reconciliation schedule
+survive a restart of its container. No webhook URL is configured in compose, so the notifier logs each notification:
+`docker compose logs -f notification`.
 
 To run one service from source, stop its container and start it with `make run-<service>`. Each service reads a
 `.env` file from its own directory, and the `.env.example` files point at the compose ports:
@@ -112,7 +114,8 @@ by a `payment` that also runs from source.
 
 ## Trying the failure modes
 
-The mock bank picks its behaviour from the beneficiary's prefix. These commands use `grpcurl`, `jq` and `uuidgen`.
+The mock bank picks its behaviour from the beneficiary's prefix. These commands use `grpcurl`, `jq`, `uuidgen` and
+curl 7.82 or later, for `--json`.
 
 ```bash
 # An account with 1000.00 EUR
@@ -261,10 +264,10 @@ and only go forward. The retry policies follow from that. Bank calls get a few a
 database retry without limit: before the pivot waiting is harmless, after it giving up is not an option. Business
 refusals (insufficient funds, a declined transfer) are return values, not errors, so nothing retries them. Errors no
 retry can fix (a missing payment, an impossible transition, a hold in a conflicting state) are non-retryable `Fatal`
-failures. After a successful `Hold`, a `Fatal` from `SendTransfer`, `Capture` or `Complete` means an invariant is
-broken: the workflow fails loudly, visible in Temporal, without compensating, and reconciliation reports the payment
-as `stuck`. It is deliberately not marked `review`: review means "the bank's outcome is unknown, waiting for a
-signal", and that is not what happened. Such a payment needs a manual repair, which is out of scope.
+failures. After a successful `Hold`, a `Fatal` from `SendTransfer`, `CancelTransfer`, `Capture` or `Complete` means an
+invariant is broken: the workflow fails loudly, visible in Temporal, without compensating, and reconciliation reports
+the payment as `stuck`. It is deliberately not marked `review`: review means "the bank's outcome is unknown, waiting
+for a signal", and that is not what happened. Such a payment needs a manual repair, which is out of scope.
 
 **Never compensate on an unknown outcome; "not found" is not a refusal.** `Release` runs only after a definitive
 `declined` or `cancelled`. A timeout, a 5xx, a `409`, a dropped connection or a status the adapter does not recognise
@@ -327,11 +330,11 @@ answer to the workflow) and a payment stuck in `created`; everything else it rep
 **Insert, then start; how a stuck `created` payment recovers.** `POST /payments` inserts the payment as `created`,
 then starts the workflow `payment-<id>`, rejecting a duplicate ID and treating "already started" as success. The two
 writes cannot share a transaction, so their order decides the failure mode: starting first could leave a workflow for
-a payment that does not exist; inserting first leaves, at worst, a `created` row without a workflow. The start does not
-inherit the request's cancellation, so a client that hangs up after the insert does not cause one. That row recovers
-in two ways: the client's retry with the same key finds it and starts the workflow, and reconciliation starts every
-payment that has stayed `created` longer than `RECONCILIATION_STUCK_AFTER` (5m). Starting is idempotent, so both can
-happen.
+a payment that does not exist; inserting first leaves, at worst, a `created` row without a workflow. The start does
+not inherit the request's cancellation, so a client that hangs up after the insert does not leave one behind. That row
+recovers in two ways: the client's retry with the same key finds it and starts the workflow, and reconciliation starts
+every payment that has stayed `created` longer than `RECONCILIATION_STUCK_AFTER` (5m). Starting is idempotent, so both
+can happen.
 
 ### Known limitations
 
@@ -340,6 +343,9 @@ happen.
 - The reconciliation schedule is created once. Changing `RECONCILIATION_INTERVAL` later has no effect until the
   schedule is updated in Temporal, or deleted (`temporal schedule delete --schedule-id reconciliation`) for the
   service to recreate on start. Temporal aligns interval schedules to the Unix epoch, so `1h` fires on the hour.
+- Reconciliation costs grow with traffic: every run looks up each final payment in the lookback window at the bank,
+  one call at a time, inside a single one-minute activity without a heartbeat. That suits the demo; production volume
+  would need the candidates checked in batches, each its own activity.
 - The inbox and the discrepancy table have no retention job.
 - Workflows are not versioned: changing `PaymentWorkflow` while payments are in flight would break their replay.
 - The mock bank keeps its state in memory; restarting it forgets every transfer.
