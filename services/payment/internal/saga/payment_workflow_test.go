@@ -123,6 +123,7 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_Table() {
 		name         string
 		hold         domain.FailureReason
 		send, cancel *bankStep
+		badSignals   []domain.BankOutcome // sent before signal; the workflow must ignore them
 		signal       domain.BankOutcome
 		wantStatus   domain.Status
 		wantReason   domain.FailureReason // expected FailPayment reason, "" = FailPayment must not run
@@ -170,7 +171,12 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_Table() {
 			wantStatus: domain.StatusFailed, wantReason: domain.ReasonBankDeclined,
 			must:    []string{saga.ActivityMarkPaymentForReview, saga.ActivityReleaseFunds},
 			mustNot: []string{saga.ActivityCaptureFunds}},
-		{name: "12 capture fails twice then succeeds", send: outcome(domain.BankSucceeded), captureFlaky: true,
+		{name: "12 both unknown, invalid signals ignored, then signal cancelled", send: unknown, cancel: unknown,
+			badSignals: []domain.BankOutcome{"succeded", ""}, signal: domain.BankCancelled,
+			wantStatus: domain.StatusFailed, wantReason: domain.ReasonBankCancelled,
+			must:    []string{saga.ActivityMarkPaymentForReview, saga.ActivityReleaseFunds},
+			mustNot: []string{saga.ActivityCaptureFunds, saga.ActivityCompletePayment}},
+		{name: "13 capture fails twice then succeeds", send: outcome(domain.BankSucceeded), captureFlaky: true,
 			wantStatus: domain.StatusSucceeded,
 			must:       []string{saga.ActivityCompletePayment},
 			mustNot:    []string{saga.ActivityReleaseFunds},
@@ -205,10 +211,16 @@ func (s *PaymentWorkflowSuite) Test_PaymentWorkflow_Table() {
 				s.on(saga.ActivityFailPayment, mock.Anything, mock.Anything).Return(nil)
 			}
 
+			for i, bad := range tt.badSignals {
+				s.env.RegisterDelayedCallback(func() {
+					s.env.SignalWorkflow(saga.BankOutcomeSignal, bad)
+				}, time.Duration(i+1)*time.Minute)
+			}
+
 			if tt.signal != "" {
 				s.env.RegisterDelayedCallback(func() {
 					s.env.SignalWorkflow(saga.BankOutcomeSignal, tt.signal)
-				}, time.Minute)
+				}, time.Duration(len(tt.badSignals)+1)*time.Minute)
 			}
 
 			s.mockRest()

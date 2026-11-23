@@ -112,10 +112,28 @@ func resolveOutcome(ctx, internal, bank workflow.Context, id uuid.UUID) (domain.
 		return "", fmt.Errorf("saga.PaymentWorkflow: mark for review: %w", err)
 	}
 
-	outcome = ""
-	workflow.GetSignalChannel(ctx, BankOutcomeSignal).Receive(ctx, &outcome)
+	return awaitOutcome(ctx), nil
+}
 
-	return outcome, nil
+// awaitOutcome waits for a bank-outcome signal that carries a final bank state. Any other value is
+// logged and ignored, so a mistyped manual signal leaves the payment in review with the hold kept
+// instead of failing the workflow.
+func awaitOutcome(ctx workflow.Context) domain.BankOutcome {
+	ch := workflow.GetSignalChannel(ctx, BankOutcomeSignal)
+
+	for {
+		var outcome domain.BankOutcome
+
+		ch.Receive(ctx, &outcome)
+
+		switch outcome {
+		case domain.BankSucceeded, domain.BankDeclined, domain.BankCancelled:
+			return outcome
+		}
+
+		workflow.GetLogger(ctx).Warn("saga.PaymentWorkflow: ignoring an invalid bank outcome signal",
+			"outcome", string(outcome))
+	}
 }
 
 func releaseAndFail(ctx, internal workflow.Context, id uuid.UUID, reason domain.FailureReason) (domain.Status, error) {
