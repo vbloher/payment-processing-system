@@ -265,13 +265,16 @@ as `stuck`. It is deliberately not marked `review`: review means "the bank's out
 signal", and that is not what happened. Such a payment needs a manual repair, which is out of scope.
 
 **Never compensate on an unknown outcome; "not found" is not a refusal.** `Release` runs only after a definitive
-`declined` or `cancelled`. A timeout, a 5xx, a dropped connection or a status the adapter does not recognise all mean
-"outcome unknown" ([`bank.go`](services/payment/internal/adapter/bank/bank.go)); the saga then asks the bank to cancel,
-and if that is unknown too it marks the payment `review`, keeps the hold and waits. Releasing on a guess is how money
-is spent twice: the customer spends the released funds while the transfer the bank did receive goes out. For the same
-reason the absence of a transfer proves nothing: a request that timed out on our side may still be queued at the bank,
-and "not found" at 12:00 says nothing about 12:01. Reconciliation follows the same rule: it settles a `review` payment
-only through `Cancel`, never from a missing statement line.
+`declined` or `cancelled`. A timeout, a 5xx, a `409`, a dropped connection or a status the adapter does not recognise
+all mean "outcome unknown" ([`bank.go`](services/payment/internal/adapter/bank/bank.go)); the saga then asks the bank
+to cancel, and if that is unknown too it marks the payment `review`, keeps the hold and waits. A `400` is a refusal:
+the bank validates a request before it looks at any stored transfer, so nothing was processed. A `409` is not: a
+transfer already exists under the payment's reference with another body and may have moved money, so `Cancel` fetches
+its final state, and a different amount surfaces in reconciliation as `amount_mismatch`. Releasing on a guess is how
+money is spent twice: the customer spends the released funds while the transfer the bank did receive goes out. For the
+same reason the absence of a transfer proves nothing: a request that timed out on our side may still be queued at the
+bank, and "not found" at 12:00 says nothing about 12:01. Reconciliation follows the same rule: it settles a `review`
+payment only through `Cancel`, never from a missing statement line.
 
 **What `Cancel` fencing assumes about the bank.** `Cancel(reference)` is idempotent and returns the transfer's final
 state: `succeeded` or `declined` when the bank has processed the request, otherwise `cancelled`, after which the bank

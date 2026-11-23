@@ -49,11 +49,16 @@ func (b *Bank) Transfer(
 	switch res.StatusCode() {
 	case http.StatusOK:
 		return toTransfer("bank.Transfer", res.JSON200)
-	case http.StatusBadRequest, http.StatusConflict:
-		// A definitive refusal of the request itself.
+	case http.StatusBadRequest:
+		// A definitive refusal: the bank validates the request before it looks up any stored transfer,
+		// so a 400 means nothing was processed.
 		return domain.BankTransfer{
 			Reference: reference, Amount: amount, Currency: currency, Status: domain.BankDeclined,
 		}, nil
+	case http.StatusConflict:
+		// Not a refusal: a transfer already exists under this reference with another body, and the bank may
+		// have moved money for it. Unknown, so the saga asks Cancel for the stored transfer's final state.
+		return domain.BankTransfer{}, unexpected("bank.Transfer", res.StatusCode())
 	default:
 		return domain.BankTransfer{}, unexpected("bank.Transfer", res.StatusCode())
 	}

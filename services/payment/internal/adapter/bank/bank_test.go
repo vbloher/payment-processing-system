@@ -78,6 +78,7 @@ func Test_Bank(t *testing.T) {
 	declineRef := uuid.NewString()
 	timeoutRef := uuid.NewString()
 	freshRef := uuid.NewString()
+	driftRef := uuid.NewString()
 
 	t.Run("transfer succeeds", func(t *testing.T) {
 		got, err := b.Transfer(ctx, okRef, 3000, "EUR", "DE-OK-1")
@@ -114,6 +115,27 @@ func Test_Bank(t *testing.T) {
 		require.Equal(t, domain.BankCancelled, got.Status)
 	})
 
+	t.Run("transfer replayed with a changed amount is unknown, then cancel returns the stored transfer", func(t *testing.T) {
+		_, err := b.Transfer(ctx, driftRef, 3000, "EUR", "TIMEOUT-1")
+		require.ErrorIs(t, err, domain.ErrBankUnavailable)
+
+		admin, err := http_client.NewClientWithResponses(url)
+		require.NoError(t, err)
+
+		res, err := admin.SetTransferAmountWithResponse(ctx, driftRef, http_client.SetTransferAmountJSONRequestBody{Amount: 1})
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, res.StatusCode())
+
+		got, err := b.Transfer(ctx, driftRef, 3000, "EUR", "TIMEOUT-1")
+		require.ErrorIs(t, err, domain.ErrBankUnavailable, "a 409 must never read as a refusal")
+		require.Empty(t, got.Status)
+
+		got, err = b.Cancel(ctx, driftRef)
+		require.NoError(t, err)
+		require.Equal(t, domain.BankSucceeded, got.Status)
+		require.EqualValues(t, 1, got.Amount)
+	})
+
 	t.Run("get transfer", func(t *testing.T) {
 		got, err := b.GetTransfer(ctx, okRef)
 		require.NoError(t, err)
@@ -136,7 +158,7 @@ func Test_Bank(t *testing.T) {
 			refs = append(refs, tr.Reference)
 		}
 
-		require.ElementsMatch(t, []string{okRef, timeoutRef}, refs)
+		require.ElementsMatch(t, []string{okRef, timeoutRef, driftRef}, refs)
 	})
 
 	t.Run("unavailable bank", func(t *testing.T) {
@@ -174,6 +196,45 @@ func Test_Bank_Stopped(t *testing.T) {
 
 	_, err := b.Transfer(t.Context(), uuid.NewString(), 3000, "EUR", "DE-OK-1")
 	require.ErrorIs(t, err, domain.ErrBankUnavailable)
+}
+
+func Test_Bank_TransferStatus(t *testing.T) {
+	tests := []struct {
+		name    string
+		code    int
+		want    domain.BankOutcome
+		wantErr error
+	}{
+		{"400 is a refusal: the request was rejected before any transfer was looked at", http.StatusBadRequest, domain.BankDeclined, nil},
+		{"409 is unknown: a transfer already exists under the reference", http.StatusConflict, "", domain.ErrBankUnavailable},
+		{"503 is unknown", http.StatusServiceUnavailable, "", domain.ErrBankUnavailable},
+		{"504 is unknown", http.StatusGatewayTimeout, "", domain.ErrBankUnavailable},
+		{"500 is unknown", http.StatusInternalServerError, "", domain.ErrBankUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.code)
+				_, _ = w.Write([]byte(`{"error":"request failed"}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			b := newBank(t, srv.URL)
+
+			got, err := b.Transfer(t.Context(), "r", 1, "EUR", "b")
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.Equal(t, domain.BankTransfer{}, got)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got.Status)
+		})
+	}
 }
 
 func Test_Bank_UnknownStatus(t *testing.T) {
