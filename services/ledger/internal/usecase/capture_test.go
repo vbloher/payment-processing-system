@@ -23,8 +23,11 @@ func Test_Capture(t *testing.T) {
 		missing bool
 		wantErr error
 		writes  bool
+		posted  bool // the payment's posting already exists: no balance or hold may change
 	}{
 		{name: "active", status: domain.HoldActive, writes: true},
+		{name: "active, posting already exists", status: domain.HoldActive, writes: true, posted: true,
+			wantErr: domain.ErrHoldConflict},
 		{name: "replay", status: domain.HoldCaptured},
 		{name: "after release", status: domain.HoldReleased, wantErr: domain.ErrHoldConflict},
 		{name: "missing", missing: true, wantErr: domain.ErrNotFound},
@@ -54,7 +57,10 @@ func Test_Capture(t *testing.T) {
 						len(tx.Entries) == 2 &&
 						tx.Entries[0] == domain.Entry{AccountID: account.ID, Side: domain.Debit, Amount: 3000} &&
 						tx.Entries[1] == domain.Entry{AccountID: bank.ID, Side: domain.Credit, Amount: 3000}
-				})).Return(true, nil)
+				})).Return(!tt.posted, nil)
+			}
+
+			if tt.writes && !tt.posted {
 				postgres.EXPECT().UpdateHoldStatus(Any, mock.MatchedBy(func(h domain.Hold) bool {
 					return h.PaymentID == paymentID && h.Status == domain.HoldCaptured
 				})).Return(nil)

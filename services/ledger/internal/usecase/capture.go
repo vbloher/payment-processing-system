@@ -76,9 +76,15 @@ func (u *UseCase) postCapture(ctx context.Context, account domain.Account, hold 
 		return fmt.Errorf("domain.NewTransaction: %w", err)
 	}
 
-	_, err = u.postgres.CreateTransaction(ctx, posting)
+	created, err := u.postgres.CreateTransaction(ctx, posting)
 	if err != nil {
 		return fmt.Errorf("postgres.CreateTransaction: %w", err)
+	}
+
+	// The posting exists while the hold is still active: moving the balances now would leave them
+	// out of step with the entries. Unreachable in normal operation; fail before writing anything.
+	if !created {
+		return fmt.Errorf("payment %s is posted while its hold is active: %w", hold.PaymentID, domain.ErrHoldConflict)
 	}
 
 	err = u.postgres.UpdateHoldStatus(ctx, hold)
