@@ -16,19 +16,20 @@ import (
 
 // reconcileCase describes the world a Reconcile run sees. Lookups are served from it; every write is recorded.
 type reconcileCase struct {
-	created, review, window, known []domain.Payment
-	statement                      []domain.BankTransfer
-	statementErr                   error
-	open                           []domain.Discrepancy
-	holds                          map[uuid.UUID]domain.HoldState
-	holdsErr                       error
-	transfers                      map[uuid.UUID]*domain.BankTransfer
-	refTransfers                   map[string]*domain.BankTransfer // lookups by a non-UUID reference
-	transferErr                    error
-	cancel                         domain.BankTransfer
-	cancelErr                      error
-	signalErr                      error
-	startErr                       error
+	created, review, processing []domain.Payment
+	window, known               []domain.Payment
+	statement                   []domain.BankTransfer
+	statementErr                error
+	open                        []domain.Discrepancy
+	holds                       map[uuid.UUID]domain.HoldState
+	holdsErr                    error
+	transfers                   map[uuid.UUID]*domain.BankTransfer
+	refTransfers                map[string]*domain.BankTransfer // lookups by a non-UUID reference
+	transferErr                 error
+	cancel                      domain.BankTransfer
+	cancelErr                   error
+	signalErr                   error
+	startErr                    error
 }
 
 type reconcileRecord struct {
@@ -53,6 +54,7 @@ func (c reconcileCase) run(t *testing.T, now time.Time) (dto.ReconcileOutput, re
 
 	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusCreated).Return(c.created, nil).Maybe()
 	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusReview).Return(c.review, nil).Maybe()
+	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusProcessing).Return(c.processing, nil).Maybe()
 	d.postgres.EXPECT().ListPaymentsUpdatedBetween(Any, now.Add(-time.Hour), now).Return(c.window, nil).Maybe()
 	d.postgres.EXPECT().ListOpenDiscrepancies(Any).Return(c.open, nil).Maybe()
 	d.postgres.EXPECT().GetPayments(Any, Any).RunAndReturn(func(_ context.Context, ids []uuid.UUID) ([]domain.Payment, error) {
@@ -338,6 +340,55 @@ func Test_Reconcile(t *testing.T) {
 		require.Empty(t, rec.resolved)
 		require.Empty(t, rec.created)
 		require.Empty(t, rec.outbox)
+	})
+
+	oldCreated := withStatus(domain.StatusCreated, 2*time.Hour)
+	oldReview := withStatus(domain.StatusReview, 2*time.Hour)
+	oldProc := withStatus(domain.StatusProcessing, 2*time.Hour)
+
+	// stuckIDs returns the payment IDs of the recorded discrepancies, requiring each to be stuck.
+	stuckIDs := func(t *testing.T, created []domain.Discrepancy) []uuid.UUID {
+		t.Helper()
+
+		ids := make([]uuid.UUID, 0, len(created))
+
+		for _, d := range created {
+			require.Equal(t, domain.KindStuck, d.Kind)
+
+			ids = append(ids, d.PaymentID)
+		}
+
+		return ids
+	}
+
+	t.Run("18 an old processing payment outside the window is stuck", func(t *testing.T) {
+		out, rec, err := reconcileCase{processing: []domain.Payment{oldProc}}.run(t, now)
+		require.NoError(t, err)
+		require.Equal(t, []uuid.UUID{oldProc.ID}, stuckIDs(t, rec.created))
+		require.Len(t, rec.outbox, 1)
+		require.Empty(t, rec.transferFor, "a non-terminal payment gets no bank lookup")
+		require.Equal(t, 1, out.Checked)
+	})
+
+	t.Run("19 old created and review payments outside the window are stuck", func(t *testing.T) {
+		out, rec, err := reconcileCase{
+			created: []domain.Payment{oldCreated}, review: []domain.Payment{oldReview},
+			cancelErr: domain.ErrBankUnavailable,
+		}.run(t, now)
+		require.NoError(t, err)
+		require.ElementsMatch(t, []uuid.UUID{oldCreated.ID, oldReview.ID}, stuckIDs(t, rec.created))
+		require.Equal(t, []uuid.UUID{oldCreated.ID}, rec.started)
+		require.Empty(t, rec.transferFor)
+		require.Equal(t, 2, out.Checked)
+	})
+
+	t.Run("20 a non-terminal payment in the window and in its status list is checked once", func(t *testing.T) {
+		out, rec, err := reconcileCase{
+			window: []domain.Payment{oldProc}, processing: []domain.Payment{oldProc},
+		}.run(t, now)
+		require.NoError(t, err)
+		require.Equal(t, []uuid.UUID{oldProc.ID}, stuckIDs(t, rec.created))
+		require.Equal(t, 1, out.Checked)
 	})
 
 	t.Run("a created discrepancy that lost the race emits no event", func(t *testing.T) {

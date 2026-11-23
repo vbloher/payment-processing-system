@@ -242,7 +242,7 @@ func Test_Activities_RegisteredUnderSagaNames(t *testing.T) {
 
 // Test_Activities_Reconcile checks that a run is reconciled as of the activity's clock with the configured
 // durations: the statement spans Lookback up to now, the payment window ends Lag before now, and only a
-// payment created more than StuckAfter ago is restarted.
+// payment created more than StuckAfter ago is restarted and recorded as stuck.
 func Test_Activities_Reconcile(t *testing.T) {
 	otel.SilentModeInit()
 
@@ -257,8 +257,13 @@ func Test_Activities_Reconcile(t *testing.T) {
 
 	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusCreated).Return([]domain.Payment{stale, fresh}, nil)
 	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusReview).Return(nil, nil)
+	d.postgres.EXPECT().ListPaymentsByStatus(Any, domain.StatusProcessing).Return(nil, nil)
 	d.postgres.EXPECT().ListOpenDiscrepancies(Any).Return(nil, nil)
 	d.orchestrator.EXPECT().StartPayment(Any, stale.ID).Return(nil).Once() // fresh is not expected
+	d.postgres.EXPECT().CreateDiscrepancy(Any, mock.MatchedBy(func(x domain.Discrepancy) bool {
+		return x.Kind == domain.KindStuck && x.PaymentID == stale.ID
+	})).Return(true, nil).Once()
+	d.postgres.EXPECT().SaveOutbox(Any, Any).Return(nil).Once()
 	d.bank.EXPECT().GetStatement(Any, Any, Any).RunAndReturn(
 		func(_ context.Context, from, to time.Time) ([]domain.BankTransfer, error) {
 			statementFrom, statementTo = from, to
@@ -276,7 +281,7 @@ func Test_Activities_Reconcile(t *testing.T) {
 	after := time.Now()
 
 	require.NoError(t, err)
-	require.Equal(t, saga.ReconcileResult{Restarted: 1}, got)
+	require.Equal(t, saga.ReconcileResult{Checked: 2, Found: 1, Restarted: 1}, got)
 
 	require.False(t, statementTo.Before(before) || statementTo.After(after), "the statement ends now")
 	require.Equal(t, config.ReconciliationLookback, statementTo.Sub(statementFrom))

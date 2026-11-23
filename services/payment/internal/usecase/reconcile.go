@@ -26,7 +26,8 @@ type finding struct {
 	details   string
 }
 
-// Reconcile compares the payments in the window with the bank and the ledger. All lookups finish before
+// Reconcile compares the payments in the window, and every unfinished payment, with the bank and the ledger.
+// An unfinished payment can only be stuck, so it gets no bank or ledger lookup. All lookups finish before
 // the first write: a failed lookup aborts the run and never becomes a discrepancy.
 // The only repairs are restarting a stuck created payment and cancelling a payment in review.
 func (u *UseCase) Reconcile(ctx context.Context, in dto.ReconcileInput) (dto.ReconcileOutput, error) {
@@ -35,24 +36,20 @@ func (u *UseCase) Reconcile(ctx context.Context, in dto.ReconcileInput) (dto.Rec
 
 	var out dto.ReconcileOutput
 
-	var err error
-
-	out.Restarted, err = u.restartStuckStarts(ctx, in)
+	pending, err := u.listUnfinished(ctx)
 	if err != nil {
 		return dto.ReconcileOutput{}, err
 	}
 
-	out.Signaled, err = u.resolveReviews(ctx)
-	if err != nil {
-		return dto.ReconcileOutput{}, err
-	}
+	out.Restarted = u.restartStuckStarts(ctx, in, pending.created)
+	out.Signaled = u.resolveReviews(ctx, pending.review)
 
 	open, err := u.postgres.ListOpenDiscrepancies(ctx)
 	if err != nil {
 		return dto.ReconcileOutput{}, fmt.Errorf("postgres.ListOpenDiscrepancies: %w", err)
 	}
 
-	candidates, findings, err := u.collectCandidates(ctx, in, open)
+	candidates, findings, err := u.collectCandidates(ctx, in, open, pending)
 	if err != nil {
 		return dto.ReconcileOutput{}, err
 	}
@@ -81,13 +78,39 @@ func (u *UseCase) Reconcile(ctx context.Context, in dto.ReconcileInput) (dto.Rec
 	return out, nil
 }
 
-// restartStuckStarts starts again the workflow of every payment that stayed "created" for too long.
-func (u *UseCase) restartStuckStarts(ctx context.Context, in dto.ReconcileInput) (int, error) {
-	created, err := u.postgres.ListPaymentsByStatus(ctx, domain.StatusCreated)
+// unfinished holds the payments in each non-terminal status at the start of a run.
+type unfinished struct {
+	created, review, processing []domain.Payment
+}
+
+// listUnfinished loads the non-terminal payments however long ago they changed: a payment that has not
+// moved since before the window is exactly the one that is stuck.
+func (u *UseCase) listUnfinished(ctx context.Context) (unfinished, error) {
+	var (
+		out unfinished
+		err error
+	)
+
+	out.created, err = u.postgres.ListPaymentsByStatus(ctx, domain.StatusCreated)
 	if err != nil {
-		return 0, fmt.Errorf("postgres.ListPaymentsByStatus: %w", err)
+		return unfinished{}, fmt.Errorf("postgres.ListPaymentsByStatus: %w", err)
 	}
 
+	out.review, err = u.postgres.ListPaymentsByStatus(ctx, domain.StatusReview)
+	if err != nil {
+		return unfinished{}, fmt.Errorf("postgres.ListPaymentsByStatus: %w", err)
+	}
+
+	out.processing, err = u.postgres.ListPaymentsByStatus(ctx, domain.StatusProcessing)
+	if err != nil {
+		return unfinished{}, fmt.Errorf("postgres.ListPaymentsByStatus: %w", err)
+	}
+
+	return out, nil
+}
+
+// restartStuckStarts starts again the workflow of every payment that stayed "created" for too long.
+func (u *UseCase) restartStuckStarts(ctx context.Context, in dto.ReconcileInput, created []domain.Payment) int {
 	restarted := 0
 
 	for _, p := range created {
@@ -95,7 +118,7 @@ func (u *UseCase) restartStuckStarts(ctx context.Context, in dto.ReconcileInput)
 			continue
 		}
 
-		err = u.orchestrator.StartPayment(ctx, p.ID)
+		err := u.orchestrator.StartPayment(ctx, p.ID)
 		if err != nil {
 			log.Error().Err(err).Str("payment_id", p.ID.String()).Msg("reconcile: restart stuck payment")
 
@@ -105,16 +128,11 @@ func (u *UseCase) restartStuckStarts(ctx context.Context, in dto.ReconcileInput)
 		restarted++
 	}
 
-	return restarted, nil
+	return restarted
 }
 
 // resolveReviews cancels the bank transfer of every payment in review and tells its workflow the outcome.
-func (u *UseCase) resolveReviews(ctx context.Context) (int, error) {
-	review, err := u.postgres.ListPaymentsByStatus(ctx, domain.StatusReview)
-	if err != nil {
-		return 0, fmt.Errorf("postgres.ListPaymentsByStatus: %w", err)
-	}
-
+func (u *UseCase) resolveReviews(ctx context.Context, review []domain.Payment) int {
 	signaled := 0
 
 	for _, p := range review {
@@ -136,12 +154,14 @@ func (u *UseCase) resolveReviews(ctx context.Context) (int, error) {
 		signaled++
 	}
 
-	return signaled, nil
+	return signaled
 }
 
-// collectCandidates returns the payments to check and the bank_unexpected findings from the statement.
+// collectCandidates returns the payments to check and the bank_unexpected findings from the statement:
+// the payments updated in the window, every unfinished payment, and the payments the statement or an open
+// discrepancy names.
 func (u *UseCase) collectCandidates(
-	ctx context.Context, in dto.ReconcileInput, open []domain.Discrepancy,
+	ctx context.Context, in dto.ReconcileInput, open []domain.Discrepancy, pending unfinished,
 ) ([]domain.Payment, []finding, error) {
 	from, to := in.Now.Add(-in.Lookback), in.Now.Add(-in.Lag)
 
@@ -150,10 +170,13 @@ func (u *UseCase) collectCandidates(
 		return nil, nil, fmt.Errorf("bank.GetStatement: %w", err)
 	}
 
-	candidates, err := u.postgres.ListPaymentsUpdatedBetween(ctx, from, to)
+	windowed, err := u.postgres.ListPaymentsUpdatedBetween(ctx, from, to)
 	if err != nil {
 		return nil, nil, fmt.Errorf("postgres.ListPaymentsUpdatedBetween: %w", err)
 	}
+
+	// The window is read last, so its copy of a payment wins; processing is read after created and review.
+	candidates := uniquePayments(windowed, pending.processing, pending.review, pending.created)
 
 	statementRefs, findings := splitStatement(statement)
 
@@ -214,10 +237,28 @@ func (u *UseCase) recheckPaymentless(
 	return findings, nil
 }
 
-// missingIDs lists the payments that the window did not return but the statement or an open discrepancy names.
-func missingIDs(windowed []domain.Payment, statementRefs map[uuid.UUID]string, open []domain.Discrepancy) []uuid.UUID {
-	seen := make(map[uuid.UUID]bool, len(windowed))
-	for _, p := range windowed {
+// uniquePayments concatenates the lists, keeping the first copy of each payment.
+func uniquePayments(lists ...[]domain.Payment) []domain.Payment {
+	seen := make(map[uuid.UUID]bool)
+
+	var out []domain.Payment
+
+	for _, list := range lists {
+		for _, p := range list {
+			if !seen[p.ID] {
+				seen[p.ID] = true
+				out = append(out, p)
+			}
+		}
+	}
+
+	return out
+}
+
+// missingIDs lists the payments that are not loaded yet but the statement or an open discrepancy names.
+func missingIDs(loaded []domain.Payment, statementRefs map[uuid.UUID]string, open []domain.Discrepancy) []uuid.UUID {
+	seen := make(map[uuid.UUID]bool, len(loaded))
+	for _, p := range loaded {
 		seen[p.ID] = true
 	}
 

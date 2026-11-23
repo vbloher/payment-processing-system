@@ -314,14 +314,15 @@ directly.
 replicas there are, without a distributed lock. A run compares payments, the bank and the ledger's holds. The time
 window (`RECONCILIATION_LOOKBACK`, 24h, ending `RECONCILIATION_LAG`, 30s, ago to leave in-flight payments alone) only
 selects candidates: payments updated in it, payments named in the bank's statement, and payments with open
-discrepancies. The verdict on each candidate comes from point lookups (the bank's transfer by reference, the ledger's
-hold by payment ID), because a record just outside a window would otherwise look missing. A bank transfer that matches
-no payment is likewise re-checked by its own lookup on later runs instead of counting as resolved once it leaves the
-statement window. All lookups finish before the first discrepancy is written, so a failed lookup fails the run, which
-is retried and then replaced by the next scheduled one, and never becomes a discrepancy. A discrepancy is stored once
-(a unique index on open `(reference, kind)`), announced once through the outbox, and resolved by the first run that no
-longer reproduces it. Reconciliation repairs only two cases, a payment in `review` (it calls `Cancel` and signals the
-bank's answer to the workflow) and a payment stuck in `created`; everything else it reports.
+discrepancies, plus every payment not yet in a final status, however old, whose only possible finding is `stuck`. The
+verdict on each candidate comes from point lookups (the bank's transfer by reference, the ledger's hold by payment
+ID), because a record just outside a window would otherwise look missing. A bank transfer that matches no payment is
+likewise re-checked by its own lookup on later runs instead of counting as resolved once it leaves the statement
+window. All lookups finish before the first discrepancy is written, so a failed lookup fails the run, which is retried
+and then replaced by the next scheduled one, and never becomes a discrepancy. A discrepancy is stored once (a unique
+index on open `(reference, kind)`), announced once through the outbox, and resolved by the first run that no longer
+reproduces it. Reconciliation repairs only two cases, a payment in `review` (it calls `Cancel` and signals the bank's
+answer to the workflow) and a payment stuck in `created`; everything else it reports.
 
 **Insert, then start; how a stuck `created` payment recovers.** `POST /payments` inserts the payment as `created`,
 then starts the workflow `payment-<id>`, rejecting a duplicate ID and treating "already started" as success. The two
