@@ -45,6 +45,28 @@ func Test_CreatePayment(t *testing.T) {
 		require.Equal(t, domain.StatusCreated, out.Payment.Status)
 	})
 
+	t.Run("a client that disconnects after the insert does not stop the start", func(t *testing.T) {
+		u, d := newUseCase(t)
+		ctx, disconnect := context.WithCancel(t.Context())
+
+		d.postgres.EXPECT().CreatePayment(Any, Any).RunAndReturn(func(context.Context, domain.Payment) (bool, error) {
+			disconnect()
+
+			return true, nil
+		})
+		d.orchestrator.EXPECT().StartPayment(Any, Any).RunAndReturn(func(ctx context.Context, _ uuid.UUID) error {
+			require.NoError(t, ctx.Err(), "the start must not inherit the request's cancellation")
+
+			_, bounded := ctx.Deadline()
+			require.True(t, bounded, "the start must still be bounded")
+
+			return nil
+		})
+
+		_, err := u.CreatePayment(ctx, in)
+		require.NoError(t, err)
+	})
+
 	t.Run("replay", func(t *testing.T) {
 		u, d := newUseCase(t)
 		stored := newPayment(domain.StatusProcessing)

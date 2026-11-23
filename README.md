@@ -327,7 +327,8 @@ answer to the workflow) and a payment stuck in `created`; everything else it rep
 **Insert, then start; how a stuck `created` payment recovers.** `POST /payments` inserts the payment as `created`,
 then starts the workflow `payment-<id>`, rejecting a duplicate ID and treating "already started" as success. The two
 writes cannot share a transaction, so their order decides the failure mode: starting first could leave a workflow for
-a payment that does not exist; inserting first leaves, at worst, a `created` row without a workflow. That row recovers
+a payment that does not exist; inserting first leaves, at worst, a `created` row without a workflow. The start does not
+inherit the request's cancellation, so a client that hangs up after the insert does not cause one. That row recovers
 in two ways: the client's retry with the same key finds it and starts the workflow, and reconciliation starts every
 payment that has stayed `created` longer than `RECONCILIATION_STUCK_AFTER` (5m). Starting is idempotent, so both can
 happen.
