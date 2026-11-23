@@ -230,7 +230,9 @@ takes a batch with `FOR UPDATE SKIP LOCKED`, deletes it and publishes it in the 
 rollback puts the events back, and replicas skip each other's rows. One window is left: published, then the commit
 fails. That gives a duplicate, which JetStream drops by `Nats-Msg-Id` (the event ID) within its 5-minute duplicate
 window and the notifier's inbox drops after that. The costs are up to `OUTBOX_INTERVAL` (1s) of latency and a
-transaction held open while a batch is published.
+transaction held open while a batch is published. While NATS is down, events wait in the outbox; both services
+reconnect for as long as the outage lasts (the client library's default gives up after about two minutes), so delivery
+resumes without a restart.
 
 **An inbox, plus an idempotency key for the effect outside the database.** JetStream delivers at least once. An
 idempotent consumer suffices when the effect is naturally idempotent, like an upsert by a business key; the notifier's
