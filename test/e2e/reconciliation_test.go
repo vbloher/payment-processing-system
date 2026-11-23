@@ -209,22 +209,51 @@ func (s *Suite) Test_Reconciliation_Scheduled() {
 	s.Equal("ReconciliationWorkflow", action.Workflow)
 	s.Equal("reconciliation", action.TaskQueue)
 
-	s.NoError(handle.Trigger(ctx, client.ScheduleTriggerOptions{}))
+	first := s.triggerSchedule(ctx, handle)
+	second := s.triggerSchedule(ctx, handle)
+	s.NotEqual(first.FirstExecutionRunID, second.FirstExecutionRunID, "each trigger is checked on the run it started")
+}
+
+// triggerSchedule triggers the schedule and waits for the run it started to complete. RecentActions is sorted
+// oldest first and capped, so the triggered run is the one that replaces the last element seen before.
+func (s *Suite) triggerSchedule(ctx context.Context, handle client.ScheduleHandle) *client.ScheduleWorkflowExecution {
+	desc, err := handle.Describe(ctx)
+	s.Require().NoError(err)
+
+	previous := lastScheduledRun(desc)
+
+	// Allow overlap for this one trigger: the scheduler may not have seen the previous run finish yet, and the
+	// schedule's skip policy would then drop the trigger.
+	s.Require().NoError(handle.Trigger(ctx,
+		client.ScheduleTriggerOptions{Overlap: enumspb.SCHEDULE_OVERLAP_POLICY_ALLOW_ALL}))
 
 	var started *client.ScheduleWorkflowExecution
 
-	s.Eventually(func() bool {
+	s.Require().Eventually(func() bool {
 		desc, err := handle.Describe(ctx)
-		if err != nil || len(desc.Info.RecentActions) == 0 {
+		if err != nil {
 			return false
 		}
 
-		started = desc.Info.RecentActions[0].StartWorkflowResult
+		started = lastScheduledRun(desc)
 
-		return started != nil
+		// Runs triggered within one second share a workflow ID; the run ID tells them apart.
+		return started != nil && (previous == nil || started.FirstExecutionRunID != previous.FirstExecutionRunID)
 	}, waitTimeout, waitTick, "the triggered schedule started no workflow")
 
-	s.NoError(s.temporal.GetWorkflow(ctx, started.WorkflowID, started.FirstExecutionRunID).Get(ctx, nil))
+	s.Require().NoError(s.temporal.GetWorkflow(ctx, started.WorkflowID, started.FirstExecutionRunID).Get(ctx, nil))
+
+	return started
+}
+
+// lastScheduledRun returns the newest run the schedule started, or nil.
+func lastScheduledRun(desc *client.ScheduleDescription) *client.ScheduleWorkflowExecution {
+	actions := desc.Info.RecentActions
+	if len(actions) == 0 {
+		return nil
+	}
+
+	return actions[len(actions)-1].StartWorkflowResult
 }
 
 // A payment the bank and the ledger agree with yields no discrepancy.
